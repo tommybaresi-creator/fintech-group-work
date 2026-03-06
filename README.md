@@ -1,1 +1,1 @@
-# Fintech-Groupworks
+# fintech-group-work
