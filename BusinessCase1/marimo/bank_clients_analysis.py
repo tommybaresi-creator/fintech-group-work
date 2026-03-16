@@ -5,25 +5,13 @@ app = marimo.App(width="full", app_title="Bank Clients — EDA & K-Medoids Clust
 
 
 # ---------------------------------------------------------------------------
-# HELPERS
-# ---------------------------------------------------------------------------
-def _load_svg(name: str) -> str:
-    """Load an SVG from the assets/ folder by stem name. Returns empty string if not found."""
-    from pathlib import Path
-    p = Path(__file__).parent / "assets" / f"{name}.svg"
-    return p.read_text(encoding="utf-8") if p.exists() else ""
-
-
-# ---------------------------------------------------------------------------
 # IMPORTS
 # ---------------------------------------------------------------------------
 @app.cell
 def __():
     import pandas as pd
     import numpy as np
-    import matplotlib
-    import matplotlib.pyplot as plt
-    import seaborn as sns
+    import json
     import plotly.graph_objects as go
     import plotly.express as px
     from plotly.subplots import make_subplots
@@ -32,11 +20,46 @@ def __():
     import marimo as mo
 
     warnings.filterwarnings("ignore")
-    sns.set_theme(style="whitegrid")
-    matplotlib.rcParams["figure.dpi"] = 110
     np.random.seed(42)
 
-    return Path, go, make_subplots, matplotlib, mo, np, pd, plt, px, sns, warnings
+    return Path, go, json, make_subplots, mo, np, pd, px, warnings
+
+
+# ---------------------------------------------------------------------------
+# PATHS & HELPERS
+# ---------------------------------------------------------------------------
+@app.cell
+def __(Path, mo):
+    RESULTS = Path(__file__).parent / "results"
+    ASSETS  = Path(__file__).parent / "assets"
+
+    def load_svg(name: str):
+        p = ASSETS / f"{name}.svg"
+        return mo.Html(p.read_text(encoding="utf-8")) if p.exists() else mo.md("")
+
+    def check_results():
+        required = [
+            "df_cluster.parquet", "distance_matrix.npy", "metrics.json",
+            "labels_k3.npy", "labels_k4.npy", "labels_k5.npy", "labels_k6.npy",
+            "umap2d.npy", "umap3d.npy",
+        ]
+        missing = [f for f in required if not (RESULTS / f).exists()]
+        return missing
+
+    _missing = check_results()
+    if _missing:
+        mo.callout(
+            mo.md(
+                f"**Precomputed results not found.** Run the following command first:\n\n"
+                f"```bash\nuv run python marimo/precompute.py\n```\n\n"
+                f"Missing: {', '.join(_missing)}"
+            ),
+            kind="danger",
+        )
+    else:
+        mo.callout(mo.md("All precomputed results found."), kind="success")
+
+    return ASSETS, RESULTS, check_results, load_svg
 
 
 # ---------------------------------------------------------------------------
@@ -48,16 +71,14 @@ def __(mo):
         r"""
         # Bank Client Segmentation — EDA & K-Medoids Clustering
 
-        **Objective:** Implement robust clustering for mixed-type financial data
-        (5,000 clients, 18 features) to identify distinct customer segments for
-        targeted marketing strategies.
+        We analyse a portfolio of **5,000 retail bank clients** described by **18 mixed-type features**
+        (13 numerical, 5 categorical). Our goal is to identify distinct, actionable customer segments
+        that can inform targeted marketing and product personalisation strategies.
 
-        **Approach:** K-Medoids algorithm with Gower distance metric and validation
-        through multiple internal cluster quality indices.
+        We adopt a **K-Medoids clustering** approach with **Gower distance** — a deliberate methodological
+        choice driven by the mixed-type structure of the data and the need for interpretable, robust segments.
 
         ---
-
-        **Features Metadata:**
 
         | Feature | Type | Description |
         |---------|------|-------------|
@@ -67,16 +88,16 @@ def __(mo):
         | `Area` | Categorical | 1=North, 2=Center, 3=South/Islands |
         | `CitySize` | Categorical | 1=Small, 2=Medium, 3=Large (>200k) |
         | `FamilySize` | Numerical | Number of family members |
-        | `Income` | Numerical | Normalized income percentile $\in [0,1]$ |
-        | `Wealth` | Numerical | Normalized wealth percentile $\in [0,1]$ |
-        | `Debt` | Numerical | Normalized debt percentile $\in [0,1]$ |
-        | `FinEdu` | Numerical | Normalized financial education $\in [0,1]$ |
-        | `ESG` | Numerical | ESG investing propensity $\in [0,1]$ |
-        | `Digital` | Numerical | Digital channel adoption $\in [0,1]$ |
-        | `BankFriend` | Numerical | Bank relationship orientation $\in [0,1]$ |
-        | `LifeStyle` | Numerical | Lifestyle spending index $\in [0,1]$ |
-        | `Luxury` | Numerical | Luxury goods propensity $\in [0,1]$ |
-        | `Saving` | Numerical | Savings behaviour $\in [0,1]$ |
+        | `Income` | Numerical | Normalized income percentile in [0,1] |
+        | `Wealth` | Numerical | Normalized wealth percentile in [0,1] |
+        | `Debt` | Numerical | Normalized debt percentile in [0,1] |
+        | `FinEdu` | Numerical | Financial education in [0,1] |
+        | `ESG` | Numerical | ESG investing propensity in [0,1] |
+        | `Digital` | Numerical | Digital channel adoption in [0,1] |
+        | `BankFriend` | Numerical | Bank relationship orientation in [0,1] |
+        | `LifeStyle` | Numerical | Lifestyle spending index in [0,1] |
+        | `Luxury` | Numerical | Luxury goods propensity in [0,1] |
+        | `Saving` | Numerical | Savings behaviour in [0,1] |
         | `Investments` | Categorical | 1=None, 2=Lump Sum, 3=Capital Accumulation |
         """
     )
@@ -102,7 +123,7 @@ def __(mo):
 def __(Path, pd):
     _data_path = Path(__file__).parent.parent / "Data" / "Dataset1_BankClients.xlsx"
     df_raw = pd.read_excel(_data_path)
-    print(f"Loaded: {df_raw.shape[0]:,} rows x {df_raw.shape[1]} columns from {_data_path.name}")
+    print(f"Loaded: {df_raw.shape[0]:,} rows x {df_raw.shape[1]} columns")
     df_raw.head()
     return (df_raw,)
 
@@ -121,7 +142,7 @@ def __(df_raw, mo, pd):
         "Missing %": (_missing.values / len(df) * 100).round(2),
     })
     mo.vstack([
-        mo.md(f"**Shape after dropping ID:** {df.shape[0]:,} rows x {df.shape[1]} columns  |  **Duplicates:** {_dupes}"),
+        mo.md(f"**Shape:** {df.shape[0]:,} rows x {df.shape[1]} columns | **Duplicates:** {_dupes}"),
         mo.ui.table(_tbl, selection=None),
     ])
     return (df,)
@@ -147,8 +168,11 @@ def __(mo):
         r"""
         ## 2. Univariate Analysis — Numerical Features
 
-        Histograms and boxplots for each numerical feature.
-        Percentile-normalized variables should lie in $[0,1]$.
+        The 12 numerical features cover two distinct scales:
+        - **Age** and **FamilySize** are raw counts/years
+        - All remaining features are pre-normalized to $[0,1]$ percentile ranks
+
+        We verify these bounds explicitly and inspect distributional shapes.
         """
     )
     return
@@ -163,71 +187,44 @@ def __(df, mo, numerical_cols, pd):
 
 
 @app.cell
-def __(df, numerical_cols, px):
-    import plotly.graph_objects as _go
-    from plotly.subplots import make_subplots as _msp
-
+def __(df, make_subplots, mo, numerical_cols, px):
+    import plotly.graph_objects as _go_l
     _n = len(numerical_cols)
-    _fig = _msp(rows=_n, cols=2,
-                subplot_titles=[f"{c} — hist" if i % 2 == 0 else f"{c} — box"
-                                for c in numerical_cols for i in range(2)],
-                vertical_spacing=0.02)
-
     _colors = px.colors.qualitative.Plotly
+    _fig = make_subplots(rows=_n, cols=2, horizontal_spacing=0.08, vertical_spacing=0.015)
     for _i, _col in enumerate(numerical_cols):
-        _r = _i + 1
-        _c = _colors[_i % len(_colors)]
-        _fig.add_trace(_go.Histogram(x=df[_col], marker_color=_c,
-                                     opacity=0.75, showlegend=False,
-                                     name=_col), row=_r, col=1)
-        _fig.add_trace(_go.Box(x=df[_col], marker_color=_c,
-                               showlegend=False, name=_col), row=_r, col=2)
-
-    _fig.update_layout(height=220 * _n, title_text="Numerical Features — Distributions & Boxplots",
-                       title_font_size=16)
-    _fig
-    return
-
-
-@app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        r"""
-        ### Bound Checks
-
-        - **Age** must be in $(0, 120]$
-        - **FamilySize** must be $\geq 1$
-        - Normalized features must lie in $[0, 1]$
-        """
-    )
+        _r, _c = _i + 1, _colors[_i % len(_colors)]
+        _fig.add_trace(_go_l.Histogram(x=df[_col].tolist(), marker_color=_c,
+                                        opacity=0.75, showlegend=False,
+                                        nbinsx=40, name=_col), row=_r, col=1)
+        _fig.add_trace(_go_l.Box(x=df[_col].tolist(), marker_color=_c,
+                                  showlegend=False, name=_col), row=_r, col=2)
+        _fig.update_yaxes(title_text=_col, row=_r, col=1, title_font_size=9)
+    _fig.update_layout(height=200 * _n, title_text="Numerical Features — Distributions & Boxplots",
+                        title_font_size=14)
+    mo.ui.plotly(_fig)
     return
 
 
 @app.cell
 def __(df, mo, normalized_vars, pd):
     _rows = []
-    _rows.append({"Feature": "Age",
-                  "Min": round(float(df["Age"].min()), 2),
-                  "Max": round(float(df["Age"].max()), 2),
-                  "Expected": "[0, 120]",
-                  "OK?": "Yes" if 0 <= df["Age"].min() and df["Age"].max() <= 120 else "No"})
-    _rows.append({"Feature": "FamilySize",
-                  "Min": int(df["FamilySize"].min()),
-                  "Max": int(df["FamilySize"].max()),
-                  "Expected": ">= 1",
+    _rows.append({"Feature": "Age", "Min": round(float(df["Age"].min()), 2),
+                  "Max": round(float(df["Age"].max()), 2), "Expected": "[0, 120]",
+                  "OK?": "Yes" if df["Age"].max() <= 120 else "No"})
+    _rows.append({"Feature": "FamilySize", "Min": int(df["FamilySize"].min()),
+                  "Max": int(df["FamilySize"].max()), "Expected": ">= 1",
                   "OK?": "Yes" if df["FamilySize"].min() >= 1 else "No"})
     for _col in normalized_vars:
         _mn, _mx = float(df[_col].min()), float(df[_col].max())
-        _rows.append({"Feature": _col,
-                      "Min": round(_mn, 4),
-                      "Max": round(_mx, 4),
-                      "Expected": "[0, 1]",
-                      "OK?": "Yes" if _mn >= 0 and _mx <= 1 else "No"})
+        _rows.append({"Feature": _col, "Min": round(_mn, 4), "Max": round(_mx, 4),
+                      "Expected": "[0, 1]", "OK?": "Yes" if _mn >= 0 and _mx <= 1 else "No"})
     _has_issues = any(r["OK?"] == "No" for r in _rows)
     mo.vstack([
         mo.callout(
-            mo.md("Some features are out of expected bounds." if _has_issues else "All feature bounds look healthy."),
-            kind="warn" if _has_issues else "success",
+            mo.md("Feature bounds are all within expected ranges." if not _has_issues
+                  else "Some features fall outside expected bounds."),
+            kind="success" if not _has_issues else "warn",
         ),
         mo.ui.table(pd.DataFrame(_rows), selection=None),
     ])
@@ -237,7 +234,16 @@ def __(df, mo, normalized_vars, pd):
 # -- Categorical distributions ----------------------------------------------
 @app.cell(hide_code=True)
 def __(mo):
-    mo.md("## 3. Univariate Analysis — Categorical Features")
+    mo.md(
+        r"""
+        ## 3. Univariate Analysis — Categorical Features
+
+        The client base is broadly distributed across job types, with a slight
+        predominance of employees. Area of residence is roughly balanced; most
+        clients live in medium or large cities. Investment behaviour is heavily
+        skewed — the majority hold no formal investment product.
+        """
+    )
     return
 
 
@@ -253,14 +259,12 @@ def __(categorical_cols, df, mo, px):
     _figs = []
     for _col in categorical_cols:
         _vc = df[_col].value_counts().sort_index()
-        _labels = [_labels_map[_col].get(int(v), str(v)) for v in _vc.index]
-        _fig = px.bar(x=_labels, y=_vc.values,
-                      title=f"Distribution of {_col}",
-                      labels={"x": _col, "y": "Count"},
-                      color_discrete_sequence=px.colors.qualitative.Vivid)
-        _fig.update_layout(height=350, margin=dict(t=50, b=30))
-        _figs.append(_fig)
-
+        _ls = [_labels_map[_col].get(int(v), str(v)) for v in _vc.index]
+        _f = px.bar(x=_ls, y=_vc.values.tolist(), title=f"{_col}",
+                    labels={"x": "", "y": "Count"},
+                    color_discrete_sequence=px.colors.qualitative.Vivid)
+        _f.update_layout(height=300, margin=dict(t=40, b=15))
+        _figs.append(mo.ui.plotly(_f))
     mo.hstack(_figs, wrap=True)
     return
 
@@ -272,10 +276,14 @@ def __(mo):
         r"""
         ## 4. Bivariate Analysis — Pearson Correlation
 
-        $$r_{XY} = \frac{\sum_{i=1}^{n}(X_i - \bar{X})(Y_i - \bar{Y})}{\sqrt{\sum_{i=1}^{n}(X_i-\bar{X})^2 \cdot \sum_{i=1}^{n}(Y_i-\bar{Y})^2}}$$
+        We compute pairwise Pearson correlation among numerical features:
 
-        Pairs with $|r| > 0.8$ may provide duplicate information in
-        distance-based clustering.
+        $$r_{XY} = \frac{\sum_{i=1}^{n}(X_i - \bar{X})(Y_i - \bar{Y})}
+        {\sqrt{\sum_{i=1}^{n}(X_i-\bar{X})^2 \cdot \sum_{i=1}^{n}(Y_i-\bar{Y})^2}}$$
+
+        Highly correlated feature pairs ($|r| > 0.8$) carry partially redundant information.
+        We note these but do **not** remove features: Gower distance already weights each
+        feature equally, and we prefer to preserve the full signal for clustering.
         """
     )
     return
@@ -287,25 +295,24 @@ def __(df, mo, numerical_cols, pd, px):
     _fig_corr = px.imshow(corr_matrix, text_auto=".2f", aspect="auto",
                            color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
                            title="Pearson Correlation Heatmap — Numerical Features")
-    _fig_corr.update_layout(height=650)
+    _fig_corr.update_layout(height=570)
 
-    _threshold = 0.8
     _pairs = []
     for _i in range(len(corr_matrix.columns)):
         for _j in range(_i):
             _v = corr_matrix.iloc[_i, _j]
-            if abs(_v) > _threshold:
+            if abs(_v) > 0.8:
                 _pairs.append({"Feature A": corr_matrix.columns[_i],
                                 "Feature B": corr_matrix.columns[_j],
-                                "Pearson r": round(float(_v), 4)})
-
+                                "r": round(float(_v), 4)})
     mo.vstack([
         mo.ui.plotly(_fig_corr),
         mo.callout(
-            mo.md(f"**{len(_pairs)} pair(s)** with |r| > {_threshold}." if _pairs else "No pairs above threshold."),
+            mo.md(f"**{len(_pairs)} pair(s)** with |r| > 0.8 detected." if _pairs
+                  else "No strong correlations (|r| > 0.8) detected."),
             kind="warn" if _pairs else "success",
         ),
-        mo.ui.table(pd.DataFrame(_pairs if _pairs else [{"Result": "None found"}]), selection=None),
+        mo.ui.table(pd.DataFrame(_pairs if _pairs else [{"Result": "None"}]), selection=None),
     ])
     return (corr_matrix,)
 
@@ -315,15 +322,11 @@ def __(df, mo, numerical_cols, pd, px):
 def __(mo):
     mo.md(
         r"""
-        ## 5. Domain Knowledge Anomaly Detection
+        ## 5. Domain Anomaly Detection
 
-        | Cohort | Rule |
-        |--------|------|
-        | Young Retirees | Age < 50 and Job = Retired |
-        | Working Minors | Age < 18 and Job in {Employee, Manager, Entrepreneur} |
-        | Rich Unemployed | Job = Unemployed and Income > 90th pct |
-        | Wealthy, No Investments | Investments = 1 and Wealth > 95th pct |
-        | Young Large Families | Age <= 20 and FamilySize >= 4 |
+        We flag client records that are logically inconsistent with real-world constraints.
+        These do not necessarily indicate data corruption, but represent edge cases that
+        may distort cluster structure if left untreated.
         """
     )
     return
@@ -332,20 +335,20 @@ def __(mo):
 @app.cell
 def __(df, mo, pd):
     _cohorts = {
-        "Young Retirees (Age < 50, Job=Retired)":    ((df["Age"] < 50) & (df["Job"] == 5)).sum(),
-        "Working Minors (Age < 18, Job in {2,3,4})": ((df["Age"] < 18) & (df["Job"].isin([2,3,4]))).sum(),
-        "Rich Unemployed (Job=1 & Income > 0.9)":    ((df["Job"] == 1) & (df["Income"] > 0.9)).sum(),
-        "Wealthy No Invest (Inv=1 & Wealth > 0.95)": ((df["Investments"] == 1) & (df["Wealth"] > 0.95)).sum(),
-        "Young Large Fam (Age<=20 & FamSz>=4)":      ((df["Age"] <= 20) & (df["FamilySize"] >= 4)).sum(),
+        "Young Retirees (Age < 50, Job=Retired)":     int(((df["Age"] < 50) & (df["Job"] == 5)).sum()),
+        "Working Minors (Age < 18, Job in {2,3,4})":  int(((df["Age"] < 18) & (df["Job"].isin([2,3,4]))).sum()),
+        "Rich Unemployed (Job=1, Income > 0.9)":       int(((df["Job"] == 1) & (df["Income"] > 0.9)).sum()),
+        "Wealthy, No Investments (Inv=1, Wealth>0.95)":int(((df["Investments"] == 1) & (df["Wealth"] > 0.95)).sum()),
+        "Young Large Families (Age<=20, FamSize>=4)":  int(((df["Age"] <= 20) & (df["FamilySize"] >= 4)).sum()),
     }
+    _total = sum(_cohorts.values())
     _tbl = pd.DataFrame([{"Cohort": k, "Count": v, "%": f"{v/len(df)*100:.2f}%"}
                           for k, v in _cohorts.items()])
-    _total = sum(_cohorts.values())
     mo.vstack([
         mo.ui.table(_tbl, selection=None),
         mo.callout(
-            mo.md(f"**{_total} total anomalous records** ({_total/len(df)*100:.2f}%). "
-                  "Working minors and young retirees are candidates for removal before clustering."),
+            mo.md(f"**{_total} records** ({_total/len(df)*100:.2f}%) match at least one anomaly rule. "
+                  "Working minors are excluded before clustering as a hard filter."),
             kind="warn",
         ),
     ])
@@ -359,15 +362,16 @@ def __(mo):
         r"""
         ## 6. Multivariate Outlier Detection — Isolation Forest
 
-        Isolation Forest partitions the feature space randomly. Outliers require
-        fewer splits to isolate. The anomaly score is:
+        Beyond univariate checks, we apply **Isolation Forest** to detect
+        clients that are anomalous across the joint distribution of all numerical features.
+        The anomaly score is:
 
-        $$\text{score}(x, n) = 2^{-\,\dfrac{E[h(x)]}{c(n)}}$$
+        $$\text{score}(x, n) = 2^{-\,\dfrac{E[h(x)]}{c(n)}}, \quad
+        c(n) = 2H(n-1) - \frac{2(n-1)}{n}$$
 
-        where $h(x)$ = average path length, $c(n) = 2H(n-1) - \frac{2(n-1)}{n}$
-        is the expected path length under no structure ($H$ = harmonic number).
-
-        We flag the top **1%** as multivariate outliers (`contamination=0.01`).
+        Scores near 1 indicate outliers; near 0.5 indicate typical observations.
+        We set `contamination=0.01` to remove the top 1% most anomalous clients.
+        The cleaned dataset is then used for all clustering steps.
         """
     )
     return
@@ -375,20 +379,17 @@ def __(mo):
 
 @app.cell
 def __(df, mo, numerical_cols):
-    from sklearn.ensemble import IsolationForest
-
-    _iso = IsolationForest(contamination=0.01, random_state=42)
-    _labels = _iso.fit_predict(df[numerical_cols])
-
-    df_clean = df[_labels == 1].copy().reset_index(drop=True)
-    _n_out = int((_labels == -1).sum())
-
+    from sklearn.ensemble import IsolationForest as _IsoF
+    _iso = _IsoF(contamination=0.01, random_state=42)
+    _lbl = _iso.fit_predict(df[numerical_cols])
+    _n_out = int((_lbl == -1).sum())
+    _n_clean = int((_lbl == 1).sum())
     mo.callout(
-        mo.md(f"**{_n_out} multivariate outliers** flagged ({_n_out/len(df)*100:.2f}%). "
-              f"Clean dataset: **{len(df_clean):,} clients**."),
+        mo.md(f"**{_n_out} multivariate outliers** removed ({_n_out/len(df)*100:.2f}%). "
+              f"Clustering proceeds on **{_n_clean:,} clients**."),
         kind="warn",
     )
-    return IsolationForest, df_clean
+    return
 
 
 # ===========================================================================
@@ -401,216 +402,201 @@ def __(mo):
 
 
 # ---------------------------------------------------------------------------
-# SVG: Distance Metric Selection Guide
+# 1. Distance Metric Selection — our rationale
 # ---------------------------------------------------------------------------
-@app.cell(hide_code=True)
-def __(mo):
-    mo.md("## 1. Theoretical Background: Distance Metrics for Mixed-Type Data")
-    return
-
-
-@app.cell(hide_code=True)
-def __(mo):
-    _svg = _load_svg("distance_metric_selection_guide")
-    if _svg:
-        mo.vstack([
-            mo.md("### Distance Metric Selection Guide"),
-            mo.Html(_svg),
-        ])
-    return
-
-
 @app.cell(hide_code=True)
 def __(mo):
     mo.md(
         r"""
-        Our dataset contains **mixed-type features** (5 categorical + 13 numerical),
-        requiring careful distance metric selection.
+        ## 1. Why Gower Distance?
 
-        ---
+        Selecting the right distance metric is the most consequential methodological decision
+        in this analysis. Our dataset is **mixed-type**: five categorical features (Job, Gender,
+        Area, CitySize, Investments) and thirteen numerical features at different scales.
 
-        ### Euclidean Distance (L2)
-
-        $$d(x,y) = \sqrt{\sum_{i=1}^{n}(x_i - y_i)^2}$$
-
-        **Pros:** Computationally efficient; intuitive geometric interpretation;
-        well-established theoretical properties.
-
-        **Cons:** Cannot handle categorical variables (Job, Gender, Area, etc.);
-        sensitive to outliers (squared differences amplify extreme values);
-        assumes continuous metric space.
-
-        ---
-
-        ### Manhattan Distance (L1)
-
-        $$d(x,y) = \sum_{i=1}^{n}|x_i - y_i|$$
-
-        **Pros:** More robust than Euclidean in high dimensions;
-        foundation for composite metrics (Gower, Sorensen).
-
-        **Cons:** Still requires numerical data (incompatible with categorical features);
-        assumes axis-aligned independence (unrealistic for correlated financial variables).
-
-        ---
-
-        ### Jaccard Distance (categorical)
-
-        $$d(A,B) = 1 - \frac{|A \cap B|}{|A \cup B|}$$
-
-        **Pros:** Excellent for binary/categorical features; measures set overlap semantically.
-
-        **Cons:** Ignores numerical magnitudes (Income, Wealth differences lost);
-        requires binarization of numerical data.
-
-        ---
-
-        ### Gower Distance (mixed-type) — Selected
-
-        $$d_{\text{Gower}}(x, y) = \frac{1}{p}\sum_{j=1}^{p}\delta_j(x,y)$$
-
-        where per-feature contribution $\delta_j$ is:
-
-        $$\delta_j = \begin{cases}
-        \dfrac{|x_j - y_j|}{R_j} & \text{numerical (normalized Manhattan, } R_j = \max_j - \min_j\text{)} \\[6pt]
-        \mathbf{1}[x_j \neq y_j] & \text{categorical (Hamming)}
-        \end{cases}$$
-
-        **Pros:** Handles mixed categorical/numerical data natively; automatic normalization
-        prevents scale bias; equal weighting of all features; range-normalized to $[0,1]$.
-
-        **Cons:** Computationally expensive — $O(n^2)$ distance matrix; assumes equal feature importance.
-
-        ---
-
-        ### Selection Rationale
-
-        For this dataset:
-        - Categorical features (Gender, Job, Area, CitySize, Investments) represent **~28%** of features
-        - Numerical features span different scales (Age: 19–95 vs normalized [0,1] scores)
-        - Gower distance is optimal as it:
-          1. Handles mixed types without preprocessing artefacts (one-hot encoding creates sparsity)
-          2. Normalizes numerical features automatically (prevents Income/Wealth dominance)
-          3. Treats categorical differences uniformly
+        We evaluated four candidate metrics:
         """
     )
     return
 
 
-# ---------------------------------------------------------------------------
-# SVG: Weighted Gower Decision
-# ---------------------------------------------------------------------------
 @app.cell(hide_code=True)
-def __(mo):
-    _svg = _load_svg("weighted_gower_decision")
-    if _svg:
-        mo.vstack([
-            mo.md("### Weighted Gower — Decision Summary"),
-            mo.Html(_svg),
-        ])
-    return
-
-
-# ---------------------------------------------------------------------------
-# Data Loading for Clustering
-# ---------------------------------------------------------------------------
-@app.cell(hide_code=True)
-def __(mo):
-    mo.md("## 2. Data Loading and Preparation")
-    return
-
-
-@app.cell
-def __(mo):
-    try:
-        import gower
-        from sklearn_extra.cluster import KMedoids
-        from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
-        from sklearn.decomposition import PCA
-        from sklearn.manifold import TSNE
-        from scipy.spatial.distance import pdist, squareform
-        import umap
-        mo.callout(mo.md("All clustering libraries loaded."), kind="success")
-    except ImportError as _e:
-        mo.callout(mo.md(f"Missing library: {_e}. Run `uv add gower scikit-learn-extra umap-learn`."), kind="danger")
-        raise
-    return (
-        KMedoids,
-        PCA,
-        TSNE,
-        calinski_harabasz_score,
-        davies_bouldin_score,
-        gower,
-        pdist,
-        silhouette_score,
-        squareform,
-        umap,
-    )
-
-
-@app.cell
-def __(categorical_cols, df_clean, mo, numerical_cols):
-    df_cluster = df_clean.copy()
+def __(load_svg, mo):
     mo.vstack([
-        mo.md(f"**Dataset for clustering:** {df_cluster.shape[0]:,} clients x {df_cluster.shape[1]} features"),
-        mo.md(f"Categorical ({len(categorical_cols)}): {', '.join(categorical_cols)}"),
-        mo.md(f"Numerical ({len(numerical_cols)}): {', '.join(numerical_cols)}"),
+        mo.md("**Our evaluation of distance metrics across four criteria:**"),
+        load_svg("distance_metric_selection_guide"),
+        mo.md(
+            r"""
+            **Euclidean** and **Manhattan** must be ruled out immediately: both require purely
+            numerical input and cannot process categorical features without lossy encoding
+            (one-hot encoding inflates dimensionality and introduces artificial sparsity).
+
+            **Jaccard** operates on set membership and loses all magnitude information —
+            Income and Wealth differences would be invisible.
+
+            **Gower distance** is the natural choice for our data structure:
+
+            $$d_{\text{Gower}}(x, y) = \frac{1}{p}\sum_{j=1}^{p}\delta_j(x,y), \quad
+            \delta_j = \begin{cases} \dfrac{|x_j - y_j|}{R_j} & \text{numerical} \\[4pt]
+            \mathbf{1}[x_j \neq y_j] & \text{categorical} \end{cases}$$
+
+            Each feature contributes equally; numerical features are range-normalized
+            to $[0,1]$ automatically ($R_j = \max_j - \min_j$), preventing Age (range 19–95)
+            from dominating the [0,1]-scaled financial indicators.
+            """
+        ),
     ])
-    return (df_cluster,)
+    return
+
+
+@app.cell(hide_code=True)
+def __(load_svg, mo):
+    mo.vstack([
+        mo.md("**Weighting rationale — why we chose unweighted Gower:**"),
+        load_svg("weighted_gower_decision"),
+        mo.md(
+            "We considered weighting categorical features more heavily to reflect their "
+            "business relevance (Job type and Investment behaviour drive product affinity). "
+            "However, we opted for **equal weights** to avoid introducing subjective priors "
+            "that could not be validated without ground-truth segment labels. "
+            "The equal-weight formulation also ensures the distance matrix is a proper metric."
+        ),
+    ])
+    return
 
 
 # ---------------------------------------------------------------------------
-# Distance Metric Comparison
+# 2. Preprocessing for Gower
 # ---------------------------------------------------------------------------
 @app.cell(hide_code=True)
 def __(mo):
     mo.md(
         r"""
-        ## 3. Distance Metric Comparison
+        ## 2. Preprocessing Pipeline
 
-        Comparing pairwise distance distributions on a 500-client random sample
-        across Euclidean, Manhattan, and Gower to validate metric selection.
+        Computing a valid Gower distance matrix requires careful data preparation.
+        We ran the full pipeline in `precompute.py` — results are loaded below.
+
+        **Key steps:**
+
+        1. **Missing values** — imputed with column median (numerical) / mode (categorical)
+        2. **Dtype enforcement** — categorical columns cast to `object` dtype so the
+           `gower` library applies Hamming distance (not numerical range normalization)
+        3. **Hard domain filter** — working minors (Age < 18, employed) removed
+        4. **Isolation Forest** — top 1% multivariate outliers removed
+        5. **Gower matrix** — computed on the cleaned, correctly-typed dataframe
+
+        The resulting matrix is $N \times N$ float32, entries in $[0, 1]$.
+        """
+    )
+    return
+
+
+# ---------------------------------------------------------------------------
+# 3. Load precomputed data
+# ---------------------------------------------------------------------------
+@app.cell
+def __(RESULTS, json, mo, np, pd):
+    _missing = []
+    for _f in ["df_cluster.parquet", "distance_matrix.npy", "metrics.json",
+               "labels_k3.npy", "umap2d.npy", "umap3d.npy"]:
+        if not (RESULTS / _f).exists():
+            _missing.append(_f)
+
+    if _missing:
+        raise FileNotFoundError(
+            f"Missing precomputed files: {_missing}. "
+            "Run: uv run python marimo/precompute.py"
+        )
+
+    df_cluster = pd.read_parquet(RESULTS / "df_cluster.parquet")
+    distance_matrix = np.load(RESULTS / "distance_matrix.npy")
+
+    with open(RESULTS / "metrics.json") as _f:
+        _raw_metrics = json.load(_f)
+    metrics_dict = {int(k): v for k, v in _raw_metrics.items()}
+
+    K_RANGE   = sorted(metrics_dict.keys())
+    labels_by_k = {k: np.load(RESULTS / f"labels_k{k}.npy") for k in K_RANGE}
+    umap2d    = np.load(RESULTS / "umap2d.npy")
+    umap3d    = np.load(RESULTS / "umap3d.npy")
+
+    mo.vstack([
+        mo.callout(mo.md("Precomputed results loaded successfully."), kind="success"),
+        mo.md(
+            f"- Dataset: **{df_cluster.shape[0]:,} clients** x {df_cluster.shape[1]} features  \n"
+            f"- Distance matrix: **{distance_matrix.shape[0]:,} x {distance_matrix.shape[0]:,}** "
+            f"({distance_matrix.nbytes / 1e6:.0f} MB)  \n"
+            f"- Metrics available for k: **{K_RANGE}**"
+        ),
+    ])
+    return (
+        K_RANGE,
+        df_cluster,
+        distance_matrix,
+        labels_by_k,
+        metrics_dict,
+        umap2d,
+        umap3d,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. Gower Distance Distribution
+# ---------------------------------------------------------------------------
+@app.cell(hide_code=True)
+def __(mo):
+    mo.md(
+        r"""
+        ## 3. Gower Distance Distribution
+
+        The pairwise Gower matrix covers $\binom{N}{2}$ unique client pairs.
+        We examine the distribution to confirm the metric is well-behaved before
+        passing it to the clustering algorithm.
         """
     )
     return
 
 
 @app.cell
-def __(df_cluster, go, gower, make_subplots, mo, np, numerical_cols, pdist, squareform):
-    _samp = df_cluster.sample(n=min(500, len(df_cluster)), random_state=42)
-    _samp_num = _samp[numerical_cols]
+def __(distance_matrix, go, mo, np, pd):
+    _upper = distance_matrix[np.triu_indices_from(distance_matrix, k=1)]
+    _dm_mean = float(_upper.mean())
+    _dm_med  = float(np.median(_upper))
+    _dm_std  = float(_upper.std())
 
-    _dist_euc = squareform(pdist(_samp_num, metric="euclidean"))
-    _dist_man = squareform(pdist(_samp_num, metric="cityblock"))
-    _dist_gow = gower.gower_matrix(_samp)
+    _fig_dist = go.Figure()
+    _fig_dist.add_trace(go.Histogram(x=_upper.tolist(), nbinsx=120,
+                                     marker_color="steelblue", opacity=0.8,
+                                     name="Gower distances"))
+    _fig_dist.add_vline(x=_dm_mean, line_dash="dash", line_color="red",
+                        annotation_text=f"Mean = {_dm_mean:.3f}")
+    _fig_dist.add_vline(x=_dm_med, line_dash="dot", line_color="green",
+                        annotation_text=f"Median = {_dm_med:.3f}")
+    _fig_dist.update_layout(
+        title=f"Pairwise Gower Distance Distribution ({len(_upper):,} pairs)",
+        xaxis_title="Gower Distance", yaxis_title="Frequency", height=400,
+    )
 
-    _specs = [
-        ("Euclidean (Numerical Only)", _dist_euc, "#4A90D9"),
-        ("Manhattan (Numerical Only)", _dist_man, "#F5A623"),
-        ("Gower (Mixed-Type)", _dist_gow, "#7ED321"),
-    ]
-
-    _fig = make_subplots(rows=1, cols=3, subplot_titles=[s[0] for s in _specs])
-    for _ci, (_title, _dm, _col) in enumerate(_specs):
-        _upper = _dm[np.triu_indices_from(_dm, k=1)]
-        _fig.add_trace(go.Histogram(x=_upper, marker_color=_col, opacity=0.8,
-                                    name=_title, showlegend=False,
-                                    nbinsx=50), row=1, col=_ci + 1)
-        _fig.add_vline(x=float(_upper.mean()), line_dash="dash", line_color="red",
-                       annotation_text=f"Mean={_upper.mean():.3f}",
-                       row=1, col=_ci + 1)
-
-    _fig.update_layout(height=400, title_text="Pairwise Distance Distributions (n=500 sample)",
-                       title_font_size=14)
-    _fig.update_xaxes(title_text="Distance")
-    _fig.update_yaxes(title_text="Frequency", col=1)
+    _stats_df = pd.DataFrame({
+        "Statistic": ["Min", "Max", "Mean", "Median", "Std Dev"],
+        "Value": [
+            f"{float(_upper.min()):.4f}",
+            f"{float(_upper.max()):.4f}",
+            f"{_dm_mean:.4f}",
+            f"{_dm_med:.4f}",
+            f"{_dm_std:.4f}",
+        ],
+    })
 
     mo.vstack([
-        mo.ui.plotly(_fig),
+        mo.ui.plotly(_fig_dist),
+        mo.ui.table(_stats_df, selection=None),
         mo.callout(
-            mo.md("Gower distance is range-normalized [0,1] and incorporates categorical features "
-                  "(Gender, Job, Area, CitySize, Investments), providing a comprehensive similarity measure. "
-                  "Euclidean/Manhattan omit 28% of the feature space."),
+            mo.md("The distribution is roughly bell-shaped and confined to [0, 1], "
+                  "confirming that no single feature dominates the distance metric. "
+                  "The absence of a spike near 0 indicates the dataset has no trivial near-duplicates "
+                  "post-outlier removal."),
             kind="info",
         ),
     ])
@@ -618,267 +604,135 @@ def __(df_cluster, go, gower, make_subplots, mo, np, numerical_cols, pdist, squa
 
 
 # ---------------------------------------------------------------------------
-# SVG: Gower Kmedoids Pipeline
+# 5. K-Medoids rationale + SVGs
 # ---------------------------------------------------------------------------
 @app.cell(hide_code=True)
-def __(mo):
-    _svg = _load_svg("gower_kmedoids_pipeline")
-    if _svg:
-        mo.vstack([
-            mo.md("### Gower + K-Medoids Pipeline"),
-            mo.Html(_svg),
-        ])
+def __(load_svg, mo):
+    mo.vstack([
+        mo.md(
+            r"""
+            ## 4. K-Medoids Algorithm
+
+            We select **K-Medoids** (specifically the FasterPAM variant) for three reasons:
+
+            1. **Precomputed matrix compatibility** — K-Means requires computing Euclidean centroids,
+               which are undefined in a precomputed distance setting. K-Medoids assigns the cluster
+               representative to the actual data point that minimises within-cluster total distance:
+
+               $$m_k = \underset{x_i \in C_k}{\arg\min} \sum_{x_j \in C_k} d(x_i, x_j)$$
+
+            2. **Robustness** — medoids are less sensitive to extreme observations than means.
+
+            3. **Interpretability** — each medoid is a real client, making segment representatives
+               directly actionable for marketing personas.
+            """
+        ),
+        mo.md("**K-Medoids algorithm and its interaction with Gower-preprocessed inputs:**"),
+        load_svg("kmedoids_explainer"),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def __(load_svg, mo):
+    mo.vstack([
+        mo.md("**Our full methodology from raw data to cluster labels:**"),
+        load_svg("gower_kmedoids_pipeline"),
+    ])
     return
 
 
 # ---------------------------------------------------------------------------
-# Full Gower Distance Matrix
+# 6. Validation metrics + optimal k
 # ---------------------------------------------------------------------------
 @app.cell(hide_code=True)
 def __(mo):
     mo.md(
         r"""
-        ## 4. Gower Distance Matrix Computation (Full Dataset)
+        ## 5. Cluster Validation & Optimal k Selection
 
-        For $N = 5{,}000$ clients this yields $\binom{5000}{2} = 12{,}497{,}500$ unique pairs.
-
-        > This cell may take 30–60 seconds on first execution.
-        """
-    )
-    return
-
-
-@app.cell
-def __(df_cluster, go, gower, mo, np):
-    distance_matrix = gower.gower_matrix(df_cluster)
-
-    print(f"\nDistance matrix: {distance_matrix.shape}")
-    print(f"Range: [{distance_matrix.min():.4f}, {distance_matrix.max():.4f}]")
-    print(f"Mean: {distance_matrix.mean():.4f}")
-    print(f"Median: {np.median(distance_matrix):.4f}")
-
-    _upper = distance_matrix[np.triu_indices_from(distance_matrix, k=1)]
-    _fig = go.Figure()
-    _fig.add_trace(go.Histogram(x=_upper, nbinsx=100, marker_color="steelblue",
-                                opacity=0.8, name="Gower distances"))
-    _fig.add_vline(x=float(_upper.mean()), line_dash="dash", line_color="red",
-                   annotation_text=f"Mean = {_upper.mean():.3f}")
-    _fig.add_vline(x=float(np.median(_upper)), line_dash="dash", line_color="green",
-                   annotation_text=f"Median = {float(np.median(_upper)):.3f}")
-    _fig.update_layout(
-        title=f"Pairwise Gower Distance Distribution ({len(_upper):,} pairs)",
-        xaxis_title="Gower Distance",
-        yaxis_title="Frequency",
-        height=400,
-    )
-    mo.ui.plotly(_fig)
-    return (distance_matrix,)
-
-
-# ---------------------------------------------------------------------------
-# SVG: Kmedoids Explainer
-# ---------------------------------------------------------------------------
-@app.cell(hide_code=True)
-def __(mo):
-    _svg = _load_svg("kmedoids_explainer")
-    if _svg:
-        mo.vstack([
-            mo.md("### K-Medoids Algorithm Explainer"),
-            mo.Html(_svg),
-        ])
-    return
-
-
-# ---------------------------------------------------------------------------
-# K-Medoids Theory
-# ---------------------------------------------------------------------------
-@app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        r"""
-        ## 5. K-Medoids Clustering with Optimal k Selection
-
-        ### 5.1 Algorithm Rationale
-
-        **Why K-Medoids over K-Means?**
-        - K-Means requires computing centroids as mean vectors — undefined for categorical features
-        - K-Medoids selects actual data points as cluster representatives (medoids)
-        - Compatible with precomputed distance matrices (Gower)
-        - More robust to outliers (median-based vs mean-based)
-
-        The medoid of cluster $C_k$ minimises intra-cluster distance:
-
-        $$m_k = \underset{x_i \in C_k}{\arg\min} \sum_{x_j \in C_k} d(x_i, x_j)$$
-
-        ---
-
-        ### 5.2 Cluster Validation Metrics
-
-        We employ a **voting scheme** across three complementary metrics:
+        We compute three complementary cluster quality indices and select $k$ via majority voting.
 
         **Silhouette Coefficient** $\in [-1, 1]$ — maximize
 
         $$s(i) = \frac{b(i) - a(i)}{\max\{a(i), b(i)\}}$$
 
-        where $a(i)$ = mean intra-cluster distance, $b(i)$ = mean nearest-cluster distance.
-        Values near $+1$ indicate well-separated clusters.
+        where $a(i)$ = mean intra-cluster distance, $b(i)$ = mean distance to nearest other cluster.
 
         **Davies-Bouldin Index** $\in [0, \infty)$ — minimize
 
-        $$DB = \frac{1}{K}\sum_{i=1}^{K}\max_{j \neq i}\!\left(\frac{\sigma_i + \sigma_j}{d(m_i, m_j)}\right)$$
-
-        where $\sigma_k$ = average within-cluster distance. Lower values indicate better clustering.
+        $$DB = \frac{1}{K}\sum_{i=1}^{K}\max_{j \neq i}\left(\frac{\sigma_i + \sigma_j}{d(m_i, m_j)}\right)$$
 
         **Calinski-Harabasz Index** $\in [0, \infty)$ — maximize
 
         $$CH = \frac{SS_B\,/\,(K-1)}{SS_W\,/\,(n-K)}$$
-
-        where $SS_B$ = between-cluster, $SS_W$ = within-cluster sum of squares.
-        Higher values indicate denser, well-separated clusters.
         """
     )
     return
 
 
-# ---------------------------------------------------------------------------
-# Run K-Medoids
-# ---------------------------------------------------------------------------
 @app.cell
-def __(
-    KMedoids,
-    calinski_harabasz_score,
-    davies_bouldin_score,
-    distance_matrix,
-    mo,
-    np,
-    silhouette_score,
-):
-    k_range = range(3, 7)
-    results = {}
-
-    print("K-Medoids clustering for k in {3, 4, 5, 6}\n")
-
-    for _k in k_range:
-        _km = KMedoids(
-            n_clusters=_k,
-            metric="precomputed",
-            init="k-medoids++",
-            max_iter=300,
-            random_state=42,
-        )
-        _clus = _km.fit_predict(distance_matrix)
-        _unique, _counts = np.unique(_clus, return_counts=True)
-
-        results[_k] = {
-            "model": _km,
-            "clusters": _clus,
-            "medoid_indices": _km.medoid_indices_,
-            "silhouette": float(silhouette_score(distance_matrix, _clus, metric="precomputed")),
-            "davies_bouldin": float(davies_bouldin_score(distance_matrix, _clus)),
-            "calinski_harabasz": float(calinski_harabasz_score(distance_matrix, _clus)),
-            "inertia": float(_km.inertia_),
-            "sizes": dict(zip(_unique.tolist(), _counts.tolist())),
-        }
-
-        print(f"k={_k}: sizes={results[_k]['sizes']},  "
-              f"Sil={results[_k]['silhouette']:.4f},  "
-              f"DB={results[_k]['davies_bouldin']:.4f},  "
-              f"CH={results[_k]['calinski_harabasz']:.2f}")
-
-    return k_range, results
-
-
-# ---------------------------------------------------------------------------
-# Performance Metrics Plots
-# ---------------------------------------------------------------------------
-@app.cell(hide_code=True)
-def __(mo):
-    mo.md("## 6. Cluster Validation — Performance Metrics")
-    return
-
-
-@app.cell
-def __(go, k_range, make_subplots, mo, pd, results):
+def __(K_RANGE, go, make_subplots, metrics_dict, mo, pd):
     summary_df = pd.DataFrame({
-        "k": list(k_range),
-        "Silhouette": [results[k]["silhouette"] for k in k_range],
-        "Davies-Bouldin": [results[k]["davies_bouldin"] for k in k_range],
-        "Calinski-Harabasz": [results[k]["calinski_harabasz"] for k in k_range],
+        "k":                  K_RANGE,
+        "Silhouette":         [metrics_dict[k]["silhouette"]         for k in K_RANGE],
+        "Davies-Bouldin":     [metrics_dict[k]["davies_bouldin"]     for k in K_RANGE],
+        "Calinski-Harabasz":  [metrics_dict[k]["calinski_harabasz"]  for k in K_RANGE],
     })
 
     _ks = summary_df["k"].tolist()
+    _bsil = int(summary_df.loc[summary_df["Silhouette"].idxmax(), "k"])
+    _bdb  = int(summary_df.loc[summary_df["Davies-Bouldin"].idxmin(), "k"])
+    _bch  = int(summary_df.loc[summary_df["Calinski-Harabasz"].idxmax(), "k"])
 
-    _best_k_sil = int(summary_df.loc[summary_df["Silhouette"].idxmax(), "k"])
-    _best_k_db  = int(summary_df.loc[summary_df["Davies-Bouldin"].idxmin(), "k"])
-    _best_k_ch  = int(summary_df.loc[summary_df["Calinski-Harabasz"].idxmax(), "k"])
-
-    _fig = make_subplots(rows=1, cols=3,
-                         subplot_titles=[
-                             "Silhouette Coefficient<br>(Higher = Better)",
-                             "Davies-Bouldin Index<br>(Lower = Better)",
-                             "Calinski-Harabasz Index<br>(Higher = Better)",
-                         ])
-
-    # Silhouette
-    _fig.add_trace(go.Scatter(x=_ks, y=summary_df["Silhouette"].tolist(),
-                               mode="lines+markers", marker=dict(size=10),
-                               line=dict(color="#1f77b4", width=2),
-                               name="Silhouette"), row=1, col=1)
-    _fig.add_vline(x=_best_k_sil, line_dash="dash", line_color="red",
-                   annotation_text=f"Optimal k={_best_k_sil}", row=1, col=1)
-
-    # Davies-Bouldin
-    _fig.add_trace(go.Scatter(x=_ks, y=summary_df["Davies-Bouldin"].tolist(),
-                               mode="lines+markers", marker=dict(size=10),
-                               line=dict(color="#ff7f0e", width=2),
-                               name="Davies-Bouldin"), row=1, col=2)
-    _fig.add_vline(x=_best_k_db, line_dash="dash", line_color="red",
-                   annotation_text=f"Optimal k={_best_k_db}", row=1, col=2)
-
-    # Calinski-Harabasz
-    _fig.add_trace(go.Scatter(x=_ks, y=summary_df["Calinski-Harabasz"].tolist(),
-                               mode="lines+markers", marker=dict(size=10),
-                               line=dict(color="#2ca02c", width=2),
-                               name="Calinski-Harabasz"), row=1, col=3)
-    _fig.add_vline(x=_best_k_ch, line_dash="dash", line_color="red",
-                   annotation_text=f"Optimal k={_best_k_ch}", row=1, col=3)
-
-    _fig.update_xaxes(title_text="k (number of clusters)")
-    _fig.update_layout(height=420, showlegend=False,
-                       title_text="Cluster Validation Metrics", title_font_size=15)
+    _fig_met = make_subplots(rows=1, cols=3, subplot_titles=[
+        "Silhouette<br>(Higher = Better)",
+        "Davies-Bouldin<br>(Lower = Better)",
+        "Calinski-Harabasz<br>(Higher = Better)",
+    ])
+    for _ci, (_col, _vals, _best, _better) in enumerate([
+        ("#1f77b4", summary_df["Silhouette"].tolist(),        _bsil, "max"),
+        ("#ff7f0e", summary_df["Davies-Bouldin"].tolist(),    _bdb,  "min"),
+        ("#2ca02c", summary_df["Calinski-Harabasz"].tolist(), _bch,  "max"),
+    ]):
+        _fig_met.add_trace(go.Scatter(x=_ks, y=_vals, mode="lines+markers",
+                                       marker=dict(size=10), line=dict(color=_col, width=2),
+                                       showlegend=False), row=1, col=_ci + 1)
+        _fig_met.add_vline(x=_best, line_dash="dash", line_color="red",
+                           annotation_text=f"k={_best}", row=1, col=_ci + 1)
+    _fig_met.update_xaxes(title_text="k")
+    _fig_met.update_layout(height=400, title_text="Cluster Validation Metrics vs. k",
+                            title_font_size=14)
 
     mo.vstack([
-        mo.ui.plotly(_fig),
+        mo.ui.plotly(_fig_met),
         mo.ui.table(summary_df.round(4), selection=None),
     ])
     return summary_df,
 
 
-# -- Voting Scheme ----------------------------------------------------------
 @app.cell
 def __(mo, summary_df):
-    _best_sil = int(summary_df.loc[summary_df["Silhouette"].idxmax(), "k"])
-    _best_db  = int(summary_df.loc[summary_df["Davies-Bouldin"].idxmin(), "k"])
-    _best_ch  = int(summary_df.loc[summary_df["Calinski-Harabasz"].idxmax(), "k"])
+    _bsil = int(summary_df.loc[summary_df["Silhouette"].idxmax(), "k"])
+    _bdb  = int(summary_df.loc[summary_df["Davies-Bouldin"].idxmin(), "k"])
+    _bch  = int(summary_df.loc[summary_df["Calinski-Harabasz"].idxmax(), "k"])
 
     _votes = {}
-    for _v in [_best_sil, _best_db, _best_ch]:
+    for _v in [_bsil, _bdb, _bch]:
         _votes[_v] = _votes.get(_v, 0) + 1
-
     optimal_k = max(_votes, key=lambda x: _votes[x])
 
     mo.callout(
         mo.md(
-            "### Voting Scheme Result\n\n"
-            f"| Metric | Optimal k |\n|---|---|\n"
-            f"| Silhouette (maximize) | k = {_best_sil} |\n"
-            f"| Davies-Bouldin (minimize) | k = {_best_db} |\n"
-            f"| Calinski-Harabasz (maximize) | k = {_best_ch} |\n\n"
-            f"**Optimal k by majority vote: k = {optimal_k}**\n\n"
-            "While the numerical results suggest that k=4 may be technically optimal "
-            "according to the majority of indices, a choice of k=3 remains highly valid. "
-            "In a business context, k=3 often provides a more interpretable segmentation "
-            "(e.g., Low, Medium, High value clients)."
+            "### Voting Scheme — Optimal k\n\n"
+            f"| Metric | Best k |\n|---|---|\n"
+            f"| Silhouette (maximize) | k = {_bsil} |\n"
+            f"| Davies-Bouldin (minimize) | k = {_bdb} |\n"
+            f"| Calinski-Harabasz (maximize) | k = {_bch} |\n\n"
+            f"**Result: k = {optimal_k}** (majority vote)\n\n"
+            "We proceed with this k. Note that k=3 remains equally defensible from "
+            "a business interpretability standpoint — three segments map naturally to "
+            "Low / Mid / High value client tiers."
         ),
         kind="success",
     )
@@ -886,292 +740,230 @@ def __(mo, summary_df):
 
 
 # ---------------------------------------------------------------------------
-# SVG: PCA Gower PAM Compatibility
+# 7. PCA / UMAP compatibility + visualizations
 # ---------------------------------------------------------------------------
 @app.cell(hide_code=True)
-def __(mo):
-    _svg = _load_svg("pca_gower_pam_compatibility")
-    if _svg:
-        mo.vstack([
-            mo.md("### PCA / Gower / PAM Compatibility"),
-            mo.Html(_svg),
-        ])
+def __(load_svg, mo):
+    mo.vstack([
+        mo.md("## 6. Cluster Visualizations"),
+        mo.md("**Why PCA and UMAP are both valid for visualising Gower-based clusters:**"),
+        load_svg("pca_gower_pam_compatibility"),
+        mo.md(
+            "PCA is applied to the **numerical subspace** of the cleaned dataset — it captures "
+            "linear variance and provides a consistent, deterministic projection. "
+            "UMAP is applied to the **precomputed Gower distance matrix** (`metric='precomputed'`), "
+            "preserving non-linear topological structure while remaining consistent with the "
+            "clustering geometry."
+        ),
+    ])
     return
 
 
-# ---------------------------------------------------------------------------
-# Cluster Visualization — PCA
-# ---------------------------------------------------------------------------
+# -- PCA visualization -------------------------------------------------------
 @app.cell(hide_code=True)
 def __(mo):
-    mo.md(
-        r"""
-        ## 7. Cluster Visualization
-
-        ### 7.1 PCA Projection
-
-        PCA finds orthogonal directions of maximum variance:
-
-        $$\mathbf{W}^* = \underset{\mathbf{W}:\mathbf{W}^\top\mathbf{W}=\mathbf{I}}{\arg\max}\;\operatorname{tr}\!\left(\mathbf{W}^\top \mathbf{\Sigma} \mathbf{W}\right), \quad
-        \text{EVR}_k = \frac{\lambda_k}{\sum_j \lambda_j}$$
-        """
-    )
+    mo.md("### 6.1 PCA — Linear Projection of Numerical Features")
     return
 
 
 @app.cell
-def __(PCA, df_cluster, mo, numerical_cols, optimal_k, px, results):
-    _clus = results[optimal_k]["clusters"]
-    _pca = PCA(n_components=2, random_state=42)
-    _pca_r = _pca.fit_transform(df_cluster[numerical_cols])
+def __(df_cluster, labels_by_k, mo, np, optimal_k, px):
+    from sklearn.decomposition import PCA as _PCA
+    _num_cols = [c for c in df_cluster.columns
+                 if c not in ["Gender", "Job", "Area", "CitySize", "Investments"]]
+    _df_num = df_cluster[_num_cols].astype(float)
+    _pca = _PCA(n_components=2, random_state=42)
+    _pca_r = _pca.fit_transform(_df_num)
     _ev1, _ev2 = _pca.explained_variance_ratio_
 
-    import pandas as _pd_local
-    _pca_df = _pd_local.DataFrame({
-        "PC1": _pca_r[:, 0],
-        "PC2": _pca_r[:, 1],
-        "Cluster": [f"Cluster {c}" for c in _clus],
+    import pandas as _ppca
+    _pca_df = _ppca.DataFrame({
+        "PC1": _pca_r[:, 0].tolist(), "PC2": _pca_r[:, 1].tolist(),
+        "Cluster": [f"Cluster {c}" for c in labels_by_k[optimal_k].tolist()],
     })
-
-    _fig_pca = px.scatter(
-        _pca_df, x="PC1", y="PC2", color="Cluster",
-        title=f"PCA 2D — K-Medoids Clusters (k={optimal_k})",
-        labels={"PC1": f"PC1 ({_ev1:.2%} var.)", "PC2": f"PC2 ({_ev2:.2%} var.)"},
-        opacity=0.55,
-        color_discrete_sequence=px.colors.qualitative.Vivid,
-    )
+    _fig_pca = px.scatter(_pca_df, x="PC1", y="PC2", color="Cluster",
+                           title=f"PCA 2D — K-Medoids k={optimal_k} (numerical features)",
+                           labels={"PC1": f"PC1 ({_ev1:.1%} var.)", "PC2": f"PC2 ({_ev2:.1%} var.)"},
+                           opacity=0.55, color_discrete_sequence=px.colors.qualitative.Vivid)
     _fig_pca.update_traces(marker=dict(size=4))
-    _fig_pca.update_layout(height=550)
+    _fig_pca.update_layout(height=520)
 
     mo.vstack([
-        mo.md(f"**Total variance explained by PC1+PC2:** {(_ev1+_ev2):.2%}"),
+        mo.md(f"PC1+PC2 explain **{(_ev1+_ev2):.1%}** of numerical variance."),
         mo.ui.plotly(_fig_pca),
     ])
     return
 
 
-# ---------------------------------------------------------------------------
-# Cluster Visualization — UMAP
-# ---------------------------------------------------------------------------
+# -- UMAP 2D -----------------------------------------------------------------
 @app.cell(hide_code=True)
 def __(mo):
     mo.md(
         r"""
-        ### 7.2 UMAP Projection
+        ### 6.2 UMAP 2D — Non-linear Embedding on Gower Distance
 
-        **UMAP** (Uniform Manifold Approximation and Projection) learns a low-dimensional
-        representation by preserving the topological structure of the data manifold.
-        It minimises the cross-entropy between fuzzy topological representations:
+        $$\mathcal{L}(\text{UMAP}) = \sum_{e} \left[w_h \log\frac{w_h}{w_l} + (1-w_h)\log\frac{1-w_h}{1-w_l}\right]$$
 
-        $$\mathcal{L} = \sum_{e \in E} \left[w_h(e)\log\frac{w_h(e)}{w_l(e)} + (1-w_h(e))\log\frac{1-w_h(e)}{1-w_l(e)}\right]$$
-
-        where $w_h$ = high-dimensional edge weights (fuzzy simplicial set), 
-        $w_l$ = low-dimensional edge weights.
-
-        UMAP is run on the **precomputed Gower distance matrix** (`metric='precomputed'`),
-        making it fully consistent with the K-Medoids clustering.
-
-        > UMAP on the full distance matrix may take ~1–2 minutes.
+        UMAP minimises cross-entropy between the high-dimensional fuzzy simplicial set ($w_h$, from Gower)
+        and the low-dimensional representation ($w_l$). The embedding below was computed
+        on the full precomputed Gower matrix with `n_neighbors=15`, `min_dist=0.1`.
         """
     )
     return
 
 
 @app.cell
-def __(distance_matrix, mo, np, optimal_k, px, results, umap):
-    _n_s = min(2000, distance_matrix.shape[0])
-    _rng = np.random.default_rng(42)
-    _idx = _rng.choice(distance_matrix.shape[0], size=_n_s, replace=False)
-    _dm_s = distance_matrix[np.ix_(_idx, _idx)]
-    _clus_s = results[optimal_k]["clusters"][_idx]
-
-    _reducer = umap.UMAP(
-        n_components=2,
-        metric="precomputed",
-        n_neighbors=15,
-        min_dist=0.1,
-        random_state=42,
-    )
-    _umap_r = _reducer.fit_transform(_dm_s)
-
-    import pandas as _pd_local2
-    _umap_df = _pd_local2.DataFrame({
-        "UMAP1": _umap_r[:, 0],
-        "UMAP2": _umap_r[:, 1],
-        "Cluster": [f"Cluster {c}" for c in _clus_s],
+def __(labels_by_k, mo, optimal_k, px, umap2d):
+    import pandas as _pumap
+    _umap_df = _pumap.DataFrame({
+        "UMAP1": umap2d[:, 0].tolist(),
+        "UMAP2": umap2d[:, 1].tolist(),
+        "Cluster": [f"Cluster {c}" for c in labels_by_k[optimal_k].tolist()],
     })
-
-    _fig_umap = px.scatter(
-        _umap_df, x="UMAP1", y="UMAP2", color="Cluster",
-        title=f"UMAP — K-Medoids Clusters (k={optimal_k}, n={_n_s} sample, Gower metric)",
-        opacity=0.6,
-        color_discrete_sequence=px.colors.qualitative.Vivid,
-    )
-    _fig_umap.update_traces(marker=dict(size=4))
-    _fig_umap.update_layout(height=580)
-
-    mo.ui.plotly(_fig_umap)
+    _fig_u2 = px.scatter(_umap_df, x="UMAP1", y="UMAP2", color="Cluster",
+                          title=f"UMAP 2D — K-Medoids k={optimal_k} (Gower metric, full dataset)",
+                          opacity=0.6, color_discrete_sequence=px.colors.qualitative.Vivid)
+    _fig_u2.update_traces(marker=dict(size=4))
+    _fig_u2.update_layout(height=560)
+    mo.ui.plotly(_fig_u2)
     return
 
 
-# ---------------------------------------------------------------------------
-# Cluster Visualization — UMAP 3D
-# ---------------------------------------------------------------------------
+# -- UMAP 3D -----------------------------------------------------------------
 @app.cell(hide_code=True)
 def __(mo):
-    mo.md("### 7.3 UMAP 3D Projection")
+    mo.md("### 6.3 UMAP 3D — Interactive Exploration")
     return
 
 
 @app.cell
-def __(distance_matrix, mo, np, optimal_k, px, results, umap):
-    _n_s3 = min(1500, distance_matrix.shape[0])
-    _rng3 = np.random.default_rng(99)
-    _idx3 = _rng3.choice(distance_matrix.shape[0], size=_n_s3, replace=False)
-    _dm_s3 = distance_matrix[np.ix_(_idx3, _idx3)]
-    _clus_s3 = results[optimal_k]["clusters"][_idx3]
-
-    _reducer3 = umap.UMAP(
-        n_components=3,
-        metric="precomputed",
-        n_neighbors=15,
-        min_dist=0.1,
-        random_state=42,
-    )
-    _umap_r3 = _reducer3.fit_transform(_dm_s3)
-
-    import pandas as _pd_local3
-    _umap_df3 = _pd_local3.DataFrame({
-        "UMAP1": _umap_r3[:, 0],
-        "UMAP2": _umap_r3[:, 1],
-        "UMAP3": _umap_r3[:, 2],
-        "Cluster": [f"Cluster {c}" for c in _clus_s3],
+def __(labels_by_k, mo, optimal_k, px, umap3d):
+    import pandas as _pumap3
+    _umap3_df = _pumap3.DataFrame({
+        "UMAP1": umap3d[:, 0].tolist(),
+        "UMAP2": umap3d[:, 1].tolist(),
+        "UMAP3": umap3d[:, 2].tolist(),
+        "Cluster": [f"Cluster {c}" for c in labels_by_k[optimal_k].tolist()],
     })
-
-    _fig3d = px.scatter_3d(
-        _umap_df3, x="UMAP1", y="UMAP2", z="UMAP3", color="Cluster",
-        title=f"UMAP 3D — K-Medoids Clusters (k={optimal_k}, n={_n_s3} sample)",
-        opacity=0.65,
-        color_discrete_sequence=px.colors.qualitative.Vivid,
-    )
-    _fig3d.update_traces(marker=dict(size=3))
-    _fig3d.update_layout(height=650)
-
-    mo.ui.plotly(_fig3d)
+    _fig_u3 = px.scatter_3d(_umap3_df, x="UMAP1", y="UMAP2", z="UMAP3",
+                              color="Cluster",
+                              title=f"UMAP 3D — K-Medoids k={optimal_k} (Gower metric)",
+                              opacity=0.65,
+                              color_discrete_sequence=px.colors.qualitative.Vivid)
+    _fig_u3.update_traces(marker=dict(size=3))
+    _fig_u3.update_layout(height=650)
+    mo.ui.plotly(_fig_u3)
     return
 
 
 # ---------------------------------------------------------------------------
-# Cluster Profiling
+# 8. Cluster Profiling
 # ---------------------------------------------------------------------------
 @app.cell(hide_code=True)
 def __(mo):
     mo.md(
         r"""
-        ## 8. Cluster Profiling — Customer Personas
+        ## 7. Cluster Profiling & Business Personas
 
-        For each cluster we compute:
-        - **Numerical features:** mean value (percentiles in [0,1])
-        - **Categorical features:** mode (most frequent value)
-        - **Cluster size** as count and % of total
+        We characterise each cluster by computing mean numerical features and
+        mode categorical features. These profiles are used to derive interpretable
+        customer personas for downstream marketing strategy.
         """
     )
     return
 
 
 @app.cell
-def __(categorical_cols, df_cluster, go, make_subplots, mo, numerical_cols, optimal_k, pd, px, results):
-    import pandas as _pd_prof
-    _clus = results[optimal_k]["clusters"]
-    _df_p = df_cluster.copy()
-    _df_p["Cluster"] = _clus
+def __(df_cluster, go, labels_by_k, make_subplots, mo, optimal_k, px):
+    import pandas as _pprof
+
+    _cat_cols = ["Gender", "Job", "Area", "CitySize", "Investments"]
+    _num_cols = [c for c in df_cluster.columns if c not in _cat_cols]
 
     _job_map  = {1:"Unemployed", 2:"Employee", 3:"Manager", 4:"Entrepreneur", 5:"Retired"}
     _inv_map  = {1:"None", 2:"Lump Sum", 3:"Cap. Accum."}
-    _area_map = {1:"North", 2:"Center", 3:"South/Islands"}
     _gen_map  = {0:"Male", 1:"Female"}
-    _city_map = {1:"Small", 2:"Medium", 3:"Large"}
+    _area_map = {1:"North", 2:"Center", 3:"South"}
 
+    _df_p = df_cluster.copy()
+    _df_p["Cluster"] = labels_by_k[optimal_k]
+
+    _pal = px.colors.qualitative.Vivid
+
+    # Summary table
     _rows = []
     for _c in range(optimal_k):
         _g = _df_p[_df_p["Cluster"] == _c]
         _row = {"Cluster": _c, "N": len(_g), "%": f"{len(_g)/len(_df_p)*100:.1f}%"}
-        for _col in numerical_cols:
-            _row[_col] = f"{_g[_col].mean():.3f}"
-        _row["Job (mode)"]  = _job_map.get(int(_g["Job"].mode()[0]), "?")
-        _row["Gender"]      = _gen_map.get(int(_g["Gender"].mode()[0]), "?")
-        _row["Area"]        = _area_map.get(int(_g["Area"].mode()[0]), "?")
-        _row["Investments"] = _inv_map.get(int(_g["Investments"].mode()[0]), "?")
+        for _col in _num_cols:
+            _row[_col] = f"{float(_g[_col].mean()):.3f}"
+        _row["Job"]         = _job_map.get(int(_g["Job"].astype(float).mode()[0]), "?")
+        _row["Gender"]      = _gen_map.get(int(_g["Gender"].astype(float).mode()[0]), "?")
+        _row["Investments"] = _inv_map.get(int(_g["Investments"].astype(float).mode()[0]), "?")
         _rows.append(_row)
+    _profile_df = _pprof.DataFrame(_rows)
 
-    _profile_df = _pd_prof.DataFrame(_rows)
-
-    # -- Radar chart (plotly) --
-    _pal = px.colors.qualitative.Vivid
-    _radar_fig = go.Figure()
+    # Radar chart
+    _radar = go.Figure()
     for _c in range(optimal_k):
         _g = _df_p[_df_p["Cluster"] == _c]
-        _vals = _g[numerical_cols].mean().tolist()
-        _vals_closed = _vals + [_vals[0]]
-        _cats_closed = numerical_cols + [numerical_cols[0]]
-        _radar_fig.add_trace(go.Scatterpolar(
-            r=_vals_closed, theta=_cats_closed,
+        _vals = [float(_g[_col].mean()) for _col in _num_cols]
+        _radar.add_trace(go.Scatterpolar(
+            r=_vals + [_vals[0]], theta=_num_cols + [_num_cols[0]],
             fill="toself", name=f"Cluster {_c}",
-            line_color=_pal[_c], opacity=0.7,
+            line_color=_pal[_c], opacity=0.75,
         ))
-    _radar_fig.update_layout(
+    _radar.update_layout(
         polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-        title=f"Radar Chart — Mean Numerical Profiles (k={optimal_k})",
-        height=520,
+        title=f"Radar — Numerical Feature Means per Cluster (k={optimal_k})",
+        height=500,
     )
 
-    # -- Box plots for key financial features --
-    _key_cols = ["Income", "Wealth", "Debt", "Saving", "Luxury"]
-    _box_fig = make_subplots(rows=1, cols=len(_key_cols),
-                              subplot_titles=_key_cols)
-    for _ci, _col in enumerate(_key_cols):
+    # Box plots
+    _key = ["Income", "Wealth", "Debt", "Saving", "Luxury", "FinEdu"]
+    _box = make_subplots(rows=1, cols=len(_key), subplot_titles=_key)
+    for _ci, _col in enumerate(_key):
         for _c in range(optimal_k):
             _g = _df_p[_df_p["Cluster"] == _c]
-            _box_fig.add_trace(go.Box(
-                y=_g[_col].tolist(), name=f"Cluster {_c}",
-                marker_color=_pal[_c], showlegend=(_ci == 0),
-            ), row=1, col=_ci + 1)
-    _box_fig.update_layout(height=450, title_text="Key Financial Features by Cluster",
-                            boxmode="group")
+            _box.add_trace(go.Box(y=_g[_col].tolist(), name=f"Cluster {_c}",
+                                   marker_color=_pal[_c], showlegend=(_ci == 0)), row=1, col=_ci + 1)
+    _box.update_layout(height=430, title_text="Key Financial Features by Cluster", boxmode="group")
 
     mo.vstack([
-        mo.md("### Summary Table"),
+        mo.md("### Cluster Summary"),
         mo.ui.table(_profile_df, selection=None),
         mo.md("### Radar Profiles"),
-        mo.ui.plotly(_radar_fig),
+        mo.ui.plotly(_radar),
         mo.md("### Financial Feature Distributions by Cluster"),
-        mo.ui.plotly(_box_fig),
+        mo.ui.plotly(_box),
     ])
     return
 
 
 # ---------------------------------------------------------------------------
-# Final Notes
+# 9. Summary
 # ---------------------------------------------------------------------------
 @app.cell(hide_code=True)
-def __(mo):
+def __(mo, optimal_k):
     mo.md(
-        r"""
-        ## 9. Summary & Business Interpretation
+        f"""
+        ## 8. Conclusions & Business Recommendations
 
-        While the numerical results typically suggest that **k=4 is technically optimal**
-        according to the majority of indices, a choice of **k=3 remains highly valid**.
-        In a business context, k=3 often provides a more interpretable segmentation
-        (e.g., Low, Medium, High value clients) and maintains consistency with
-        previous exploratory models.
+        Our analysis identifies **k = {optimal_k}** as the statistically optimal number of
+        client segments by majority vote across Silhouette, Davies-Bouldin, and Calinski-Harabasz indices.
 
-        ### Recommended Personas (k=3)
+        The Gower + K-Medoids approach provides three key advantages over simpler alternatives:
+        - **No information loss** — all 18 features (including categorical) contribute to cluster assignment
+        - **Scale invariance** — automatic range normalization prevents any single feature from dominating
+        - **Interpretable representatives** — each medoid is a real client that can serve as a segment archetype
 
-        | Persona | Profile | Marketing Focus |
-        |---------|---------|-----------------|
-        | Segment A | High Wealth & Income, high FinEdu, ESG-oriented | Premium portfolios, sustainable investments |
-        | Segment B | Mid Income, family-focused, moderate Saving | Life insurance, education savings plans |
-        | Segment C | Lower Income, higher Debt, lower FinEdu | Financial literacy programs, debt restructuring |
+        ### Recommended Personas
+
+        | Segment | Profile | Recommended Products |
+        |---------|---------|---------------------|
+        | A | High Income / Wealth, ESG-oriented, high FinEdu | Sustainable portfolios, premium advisory |
+        | B | Mid Income, family-oriented, moderate Saving | Life insurance, education savings plans |
+        | C | Lower Income, higher Debt, low FinEdu | Financial literacy, debt consolidation |
         """
     )
     return

@@ -6,14 +6,15 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "gower>=0.1.2",
+    "kmedoids>=0.5.4",
     "marimo>=0.20.4",
     "matplotlib>=3.10.8",
     "numpy>=2.4.3",
     "openpyxl>=3.1.5",
     "pandas>=3.0.1",
     "plotly>=6.6.0",
+    "pyarrow>=23.0.1",
     "scikit-learn>=1.8.0",
-    "scikit-learn-extra>=0.3.0",
     "scipy>=1.17.1",
     "seaborn>=0.13.2",
     "umap-learn>=0.5.11",
