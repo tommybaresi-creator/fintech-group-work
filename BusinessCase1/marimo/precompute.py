@@ -142,82 +142,87 @@ df_save.to_parquet(RESULTS_DIR / "df_cluster.parquet", index=False)
 print(f"  Saved df_cluster.parquet ({len(df_save):,} rows)")
 
 # ==========================================================================
-# STEP 7 — Compute Gower distance matrix
+# STEP 7 — Compute Gower distance matrices (Unweighted & Weighted)
 #
-# gower.gower_matrix(df) auto-detects:
-#   - object dtype → categorical (Hamming contribution)
-#   - numeric dtype → numerical (range-normalized Manhattan contribution)
-#
-# Result is a symmetric float32 matrix in [0, 1].
+# Weighted Gower gives 2x importance to 'Job' and 'Investments'
 # ==========================================================================
-print(f"\nStep 7: Computing Gower distance matrix ({len(df):,} x {len(df):,})...")
-print("  This may take 1–3 minutes...")
-dist_matrix = gower.gower_matrix(df).astype(np.float32)
+print(f"\nStep 7: Computing Gower distance matrices ({len(df):,} x {len(df):,})...")
+print("  This may take 2–5 minutes...")
 
-print(f"  Shape: {dist_matrix.shape}")
-print(f"  Range: [{dist_matrix.min():.4f}, {dist_matrix.max():.4f}]")
-print(f"  Mean:  {dist_matrix.mean():.4f}")
-print(f"  Median:{float(np.median(dist_matrix)):.4f}")
+weight_array = np.ones(df.shape[1], dtype=np.float32)
+col_idx_job = df.columns.get_loc("Job")
+col_idx_inv = df.columns.get_loc("Investments")
+weight_array[col_idx_job] = 2.0
+weight_array[col_idx_inv] = 2.0
 
-np.save(RESULTS_DIR / "distance_matrix.npy", dist_matrix)
-print("  Saved distance_matrix.npy")
+matrices = {
+    "": gower.gower_matrix(df).astype(np.float32),
+    "_w": gower.gower_matrix(df, weight=weight_array).astype(np.float32)
+}
+
+for suffix, dist_matrix in matrices.items():
+    print(f"\n  Matrix '{suffix or 'unweighted'}':")
+    print(f"    Shape: {dist_matrix.shape}")
+    print(f"    Range: [{dist_matrix.min():.4f}, {dist_matrix.max():.4f}]")
+    print(f"    Mean:  {dist_matrix.mean():.4f}")
+    print(f"    Median:{float(np.median(dist_matrix)):.4f}")
+    np.save(RESULTS_DIR / f"distance_matrix{suffix}.npy", dist_matrix)
+    print(f"    Saved distance_matrix{suffix}.npy")
 
 # ==========================================================================
 # STEP 8 — K-Medoids (FasterPAM) for k = 3, 4, 5, 6
 # ==========================================================================
 print("\nStep 8: Running FasterPAM K-Medoids for k in {3, 4, 5, 6}...")
 K_RANGE = [3, 4, 5, 6]
-metrics_dict = {}
 
-for k in K_RANGE:
-    print(f"\n  k={k}...")
-    res = kmedoids.fasterpam(dist_matrix, k, random_state=42)
-    labels = np.array(res.labels, dtype=np.int32)
-
-    sil  = float(silhouette_score(dist_matrix, labels, metric="precomputed"))
-    db   = float(davies_bouldin_score(dist_matrix, labels))
-    ch   = float(calinski_harabasz_score(dist_matrix, labels))
-
-    unique, counts = np.unique(labels, return_counts=True)
-    sizes = dict(zip(unique.tolist(), counts.tolist()))
-
-    print(f"    sizes={sizes}  Sil={sil:.4f}  DB={db:.4f}  CH={ch:.2f}")
-
-    np.save(RESULTS_DIR / f"labels_k{k}.npy", labels)
-    np.save(RESULTS_DIR / f"medoids_k{k}.npy", np.array(res.medoids, dtype=np.int32))
-
-    metrics_dict[k] = {
-        "silhouette": sil,
-        "davies_bouldin": db,
-        "calinski_harabasz": ch,
-        "loss": float(res.loss),
-        "sizes": sizes,
-    }
-
-with open(RESULTS_DIR / "metrics.json", "w") as f:
-    json.dump(metrics_dict, f, indent=2)
-print("\n  Saved metrics.json")
+for suffix, dist_matrix in matrices.items():
+    print(f"\n  --- {'WEIGHTED' if suffix else 'UNWEIGHTED'} ---")
+    metrics_dict = {}
+    for k in K_RANGE:
+        print(f"\n    k={k}...")
+        res = kmedoids.fasterpam(dist_matrix, k, random_state=42)
+        labels = np.array(res.labels, dtype=np.int32)
+        
+        sil  = float(silhouette_score(dist_matrix, labels, metric="precomputed"))
+        db   = float(davies_bouldin_score(dist_matrix, labels))
+        ch   = float(calinski_harabasz_score(dist_matrix, labels))
+        
+        unique, counts = np.unique(labels, return_counts=True)
+        sizes = dict(zip(unique.tolist(), counts.tolist()))
+        
+        print(f"      sizes={sizes}  Sil={sil:.4f}  DB={db:.4f}  CH={ch:.2f}")
+        
+        np.save(RESULTS_DIR / f"labels_k{k}{suffix}.npy", labels)
+        np.save(RESULTS_DIR / f"medoids_k{k}{suffix}.npy", np.array(res.medoids, dtype=np.int32))
+        
+        metrics_dict[k] = {
+            "silhouette": sil,
+            "davies_bouldin": db,
+            "calinski_harabasz": ch,
+            "loss": float(res.loss),
+            "sizes": sizes,
+        }
+        
+    with open(RESULTS_DIR / f"metrics{suffix}.json", "w") as f:
+        json.dump(metrics_dict, f, indent=2)
+    print(f"  Saved metrics{suffix}.json")
 
 # ==========================================================================
-# STEP 9 — UMAP embeddings (on Gower distance matrix)
+# STEP 9 — UMAP embeddings
 # ==========================================================================
 print("\nStep 9: Computing UMAP embeddings (precomputed Gower)...")
 
-# 2D
-print("  UMAP 2D (full dataset)...")
-reducer2 = umap.UMAP(n_components=2, metric="precomputed", n_neighbors=15,
-                     min_dist=0.1, random_state=42)
-embedding2 = reducer2.fit_transform(dist_matrix).astype(np.float32)
-np.save(RESULTS_DIR / "umap2d.npy", embedding2)
-print(f"  Saved umap2d.npy — shape {embedding2.shape}")
+for suffix, dist_matrix in matrices.items():
+    print(f"\n  --- {'WEIGHTED' if suffix else 'UNWEIGHTED'} ---")
+    print("    UMAP 2D...")
+    reducer2 = umap.UMAP(n_components=2, metric="precomputed", n_neighbors=15, min_dist=0.1, random_state=42)
+    emb2 = reducer2.fit_transform(dist_matrix).astype(np.float32)
+    np.save(RESULTS_DIR / f"umap2d{suffix}.npy", emb2)
 
-# 3D
-print("  UMAP 3D (full dataset)...")
-reducer3 = umap.UMAP(n_components=3, metric="precomputed", n_neighbors=15,
-                     min_dist=0.1, random_state=42)
-embedding3 = reducer3.fit_transform(dist_matrix).astype(np.float32)
-np.save(RESULTS_DIR / "umap3d.npy", embedding3)
-print(f"  Saved umap3d.npy — shape {embedding3.shape}")
+    print("    UMAP 3D...")
+    reducer3 = umap.UMAP(n_components=3, metric="precomputed", n_neighbors=15, min_dist=0.1, random_state=42)
+    emb3 = reducer3.fit_transform(dist_matrix).astype(np.float32)
+    np.save(RESULTS_DIR / f"umap3d{suffix}.npy", emb3)
 
 # ==========================================================================
 # DONE

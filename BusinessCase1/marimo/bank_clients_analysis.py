@@ -42,6 +42,9 @@ def __(Path, mo):
             "df_cluster.parquet", "distance_matrix.npy", "metrics.json",
             "labels_k3.npy", "labels_k4.npy", "labels_k5.npy", "labels_k6.npy",
             "umap2d.npy", "umap3d.npy",
+            "distance_matrix_w.npy", "metrics_w.json",
+            "labels_k3_w.npy", "labels_k4_w.npy", "labels_k5_w.npy", "labels_k6_w.npy",
+            "umap2d_w.npy", "umap3d_w.npy",
         ]
         missing = [f for f in required if not (RESULTS / f).exists()]
         return missing
@@ -71,12 +74,14 @@ def __(mo):
         r"""
         # Bank Client Segmentation — EDA & K-Medoids Clustering
 
-        We analyse a portfolio of **5,000 retail bank clients** described by **18 mixed-type features**
+        **Executive Summary (Abstract)**: We analyse a portfolio of **5,000 retail bank clients** described by **18 mixed-type features**
         (13 numerical, 5 categorical). Our goal is to identify distinct, actionable customer segments
-        that can inform targeted marketing and product personalisation strategies.
+        that can inform targeted marketing and product personalisation strategies. We adopt a **K-Medoids clustering** approach with **Gower distance**, performing standard (unweighted) clustering alongside a **weighted alternative** that assigns double importance to the *Job* and *Investments* features.
 
-        We adopt a **K-Medoids clustering** approach with **Gower distance** — a deliberate methodological
-        choice driven by the mixed-type structure of the data and the need for interpretable, robust segments.
+        **Index**:
+        - [Part 1 — Exploratory Data Analysis & Outlier Detection](#part-1)
+        - [Part 2 — Unweighted K-Medoids Clustering](#part-2)
+        - [Part 3 — Weighted K-Medoids Clustering](#part-3)
 
         ---
 
@@ -109,7 +114,7 @@ def __(mo):
 # ===========================================================================
 @app.cell(hide_code=True)
 def __(mo):
-    mo.md("---\n# Part 1 — Exploratory Data Analysis & Outlier Detection")
+    mo.md("<a id='part-1'></a>\n---\n# Part 1 — Exploratory Data Analysis & Outlier Detection")
     return
 
 
@@ -397,7 +402,7 @@ def __(df, mo, numerical_cols):
 # ===========================================================================
 @app.cell(hide_code=True)
 def __(mo):
-    mo.md("---\n# Part 2 — K-Medoids Clustering")
+    mo.md("<a id='part-2'></a>\n---\n# Part 2 — Unweighted K-Medoids Clustering")
     return
 
 
@@ -510,16 +515,26 @@ def __(RESULTS, json, mo, np, pd):
         )
 
     df_cluster = pd.read_parquet(RESULTS / "df_cluster.parquet")
+    
     distance_matrix = np.load(RESULTS / "distance_matrix.npy")
+    distance_matrix_w = np.load(RESULTS / "distance_matrix_w.npy")
 
     with open(RESULTS / "metrics.json") as _f:
         _raw_metrics = json.load(_f)
     metrics_dict = {int(k): v for k, v in _raw_metrics.items()}
 
+    with open(RESULTS / "metrics_w.json") as _f:
+        _raw_metrics_w = json.load(_f)
+    metrics_dict_w = {int(k): v for k, v in _raw_metrics_w.items()}
+
     K_RANGE   = sorted(metrics_dict.keys())
     labels_by_k = {k: np.load(RESULTS / f"labels_k{k}.npy") for k in K_RANGE}
+    labels_by_k_w = {k: np.load(RESULTS / f"labels_k{k}_w.npy") for k in K_RANGE}
+    
     umap2d    = np.load(RESULTS / "umap2d.npy")
     umap3d    = np.load(RESULTS / "umap3d.npy")
+    umap2d_w  = np.load(RESULTS / "umap2d_w.npy")
+    umap3d_w  = np.load(RESULTS / "umap3d_w.npy")
 
     mo.vstack([
         mo.callout(mo.md("Precomputed results loaded successfully."), kind="success"),
@@ -534,10 +549,15 @@ def __(RESULTS, json, mo, np, pd):
         K_RANGE,
         df_cluster,
         distance_matrix,
+        distance_matrix_w,
         labels_by_k,
+        labels_by_k_w,
         metrics_dict,
+        metrics_dict_w,
         umap2d,
         umap3d,
+        umap2d_w,
+        umap3d_w,
     )
 
 
@@ -967,6 +987,438 @@ def __(mo, optimal_k):
         """
     )
     return
+
+
+# ---------------------------------------------------------------------------
+# 4. Gower Distance Distribution
+# ---------------------------------------------------------------------------
+@app.cell(hide_code=True)
+def __(mo):
+    mo.md(
+        r"""
+        <a id="part-3"></a>\n---\n# Part 3 — Weighted K-Medoids Clustering\n\n## 1. Weighted Gower Distance Distribution
+
+        The **weighted** pairwise Gower matrix (Job and Investments x2) covers $\binom{N}{2}$ unique client pairs.
+        We examine the distribution to confirm the metric is well-behaved before
+        passing it to the clustering algorithm.
+        """
+    )
+    return
+
+
+@app.cell
+def __(distance_matrix_w, go, mo, np, pd):
+    _upper = distance_matrix_w[np.triu_indices_from(distance_matrix_w, k=1)]
+    _dm_mean = float(_upper.mean())
+    _dm_med  = float(np.median(_upper))
+    _dm_std  = float(_upper.std())
+
+    _fig_dist = go.Figure()
+    _fig_dist.add_trace(go.Histogram(x=_upper.tolist(), nbinsx=120,
+                                     marker_color="steelblue", opacity=0.8,
+                                     name="Gower distances"))
+    _fig_dist.add_vline(x=_dm_mean, line_dash="dash", line_color="red",
+                        annotation_text=f"Mean = {_dm_mean:.3f}")
+    _fig_dist.add_vline(x=_dm_med, line_dash="dot", line_color="green",
+                        annotation_text=f"Median = {_dm_med:.3f}")
+    _fig_dist.update_layout(
+        title=f"Pairwise Gower Distance Distribution ({len(_upper):,} pairs)",
+        xaxis_title="Gower Distance", yaxis_title="Frequency", height=400,
+    )
+
+    _stats_df = pd.DataFrame({
+        "Statistic": ["Min", "Max", "Mean", "Median", "Std Dev"],
+        "Value": [
+            f"{float(_upper.min()):.4f}",
+            f"{float(_upper.max()):.4f}",
+            f"{_dm_mean:.4f}",
+            f"{_dm_med:.4f}",
+            f"{_dm_std:.4f}",
+        ],
+    })
+
+    mo.vstack([
+        mo.ui.plotly(_fig_dist),
+        mo.ui.table(_stats_df, selection=None),
+        mo.callout(
+            mo.md("The distribution is roughly bell-shaped and confined to [0, 1], "
+                  "confirming that no single feature dominates the distance metric. "
+                  "The absence of a spike near 0 indicates the dataset has no trivial near-duplicates "
+                  "post-outlier removal."),
+            kind="info",
+        ),
+    ])
+    return
+
+
+# ---------------------------------------------------------------------------
+# 5. K-Medoids rationale + SVGs
+# ---------------------------------------------------------------------------
+@app.cell(hide_code=True)
+def __(load_svg, mo):
+    mo.vstack([
+        mo.md(
+            r"""
+            ## 2. K-Medoids Algorithm (Weighted)
+
+            We select **K-Medoids** (specifically the FasterPAM variant) for three reasons:
+
+            1. **Precomputed matrix compatibility** — K-Means requires computing Euclidean centroids,
+               which are undefined in a precomputed distance setting. K-Medoids assigns the cluster
+               representative to the actual data point that minimises within-cluster total distance:
+
+               $$m_k = \underset{x_i \in C_k}{\arg\min} \sum_{x_j \in C_k} d(x_i, x_j)$$
+
+            2. **Robustness** — medoids are less sensitive to extreme observations than means.
+
+            3. **Interpretability** — each medoid is a real client, making segment representatives
+               directly actionable for marketing personas.
+            """
+        ),
+        mo.md("**K-Medoids algorithm and its interaction with Gower-preprocessed inputs:**"),
+        load_svg("kmedoids_explainer"),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def __(load_svg, mo):
+    mo.vstack([
+        mo.md("**Our full methodology from raw data to cluster labels:**"),
+        load_svg("gower_kmedoids_pipeline"),
+    ])
+    return
+
+
+# ---------------------------------------------------------------------------
+# 6. Validation metrics + optimal k
+# ---------------------------------------------------------------------------
+@app.cell(hide_code=True)
+def __(mo):
+    mo.md(
+        r"""
+        ## 3. Weighted Cluster Validation
+
+        We compute three complementary cluster quality indices and select $k$ via majority voting.
+
+        **Silhouette Coefficient** $\in [-1, 1]$ — maximize
+
+        $$s(i) = \frac{b(i) - a(i)}{\max\{a(i), b(i)\}}$$
+
+        where $a(i)$ = mean intra-cluster distance, $b(i)$ = mean distance to nearest other cluster.
+
+        **Davies-Bouldin Index** $\in [0, \infty)$ — minimize
+
+        $$DB = \frac{1}{K}\sum_{i=1}^{K}\max_{j \neq i}\left(\frac{\sigma_i + \sigma_j}{d(m_i, m_j)}\right)$$
+
+        **Calinski-Harabasz Index** $\in [0, \infty)$ — maximize
+
+        $$CH = \frac{SS_B\,/\,(K-1)}{SS_W\,/\,(n-K)}$$
+        """
+    )
+    return
+
+
+@app.cell
+def __(K_RANGE, go, make_subplots, metrics_dict_w, mo, pd):
+    summary_df_w = pd.DataFrame({
+        "k":                  K_RANGE,
+        "Silhouette":         [metrics_dict_w[k]["silhouette"]         for k in K_RANGE],
+        "Davies-Bouldin":     [metrics_dict_w[k]["davies_bouldin"]     for k in K_RANGE],
+        "Calinski-Harabasz":  [metrics_dict_w[k]["calinski_harabasz"]  for k in K_RANGE],
+    })
+
+    _ks = summary_df_w["k"].tolist()
+    _bsil = int(summary_df_w.loc[summary_df_w["Silhouette"].idxmax(), "k"])
+    _bdb  = int(summary_df_w.loc[summary_df_w["Davies-Bouldin"].idxmin(), "k"])
+    _bch  = int(summary_df_w.loc[summary_df_w["Calinski-Harabasz"].idxmax(), "k"])
+
+    _fig_met = make_subplots(rows=1, cols=3, subplot_titles=[
+        "Silhouette<br>(Higher = Better)",
+        "Davies-Bouldin<br>(Lower = Better)",
+        "Calinski-Harabasz<br>(Higher = Better)",
+    ])
+    for _ci, (_col, _vals, _best, _better) in enumerate([
+        ("#1f77b4", summary_df_w["Silhouette"].tolist(),        _bsil, "max"),
+        ("#ff7f0e", summary_df_w["Davies-Bouldin"].tolist(),    _bdb,  "min"),
+        ("#2ca02c", summary_df_w["Calinski-Harabasz"].tolist(), _bch,  "max"),
+    ]):
+        _fig_met.add_trace(go.Scatter(x=_ks, y=_vals, mode="lines+markers",
+                                       marker=dict(size=10), line=dict(color=_col, width=2),
+                                       showlegend=False), row=1, col=_ci + 1)
+        _fig_met.add_vline(x=_best, line_dash="dash", line_color="red",
+                           annotation_text=f"k={_best}", row=1, col=_ci + 1)
+    _fig_met.update_xaxes(title_text="k")
+    _fig_met.update_layout(height=400, title_text="Cluster Validation Metrics vs. k",
+                            title_font_size=14)
+
+    mo.vstack([
+        mo.ui.plotly(_fig_met),
+        mo.ui.table(summary_df_w.round(4), selection=None),
+    ])
+    return summary_df_w,
+
+
+@app.cell
+def __(mo, summary_df_w):
+    _bsil = int(summary_df_w.loc[summary_df_w["Silhouette"].idxmax(), "k"])
+    _bdb  = int(summary_df_w.loc[summary_df_w["Davies-Bouldin"].idxmin(), "k"])
+    _bch  = int(summary_df_w.loc[summary_df_w["Calinski-Harabasz"].idxmax(), "k"])
+
+    _votes = {}
+    for _v in [_bsil, _bdb, _bch]:
+        _votes[_v] = _votes.get(_v, 0) + 1
+    optimal_k_w = max(_votes, key=lambda x: _votes[x])
+
+    mo.callout(
+        mo.md(
+            "### Voting Scheme — Optimal k\n\n"
+            f"| Metric | Best k |\n|---|---|\n"
+            f"| Silhouette (maximize) | k = {_bsil} |\n"
+            f"| Davies-Bouldin (minimize) | k = {_bdb} |\n"
+            f"| Calinski-Harabasz (maximize) | k = {_bch} |\n\n"
+            f"**Result: k = {optimal_k_w}** (majority vote)\n\n"
+            "We proceed with this k. Note that k=3 remains equally defensible from "
+            "a business interpretability standpoint — three segments map naturally to "
+            "Low / Mid / High value client tiers."
+        ),
+        kind="success",
+    )
+    return (optimal_k_w,)
+
+
+# ---------------------------------------------------------------------------
+# 7. PCA / UMAP compatibility + visualizations
+# ---------------------------------------------------------------------------
+@app.cell(hide_code=True)
+def __(load_svg, mo):
+    mo.vstack([
+        mo.md("## 4. Weighted Cluster Visualizations"),
+        mo.md("**Why PCA and UMAP are both valid for visualising Gower-based clusters:**"),
+        load_svg("pca_gower_pam_compatibility"),
+        mo.md(
+            "PCA is applied to the **numerical subspace** of the cleaned dataset — it captures "
+            "linear variance and provides a consistent, deterministic projection. "
+            "UMAP is applied to the **precomputed Gower distance matrix** (`metric='precomputed'`), "
+            "preserving non-linear topological structure while remaining consistent with the "
+            "clustering geometry."
+        ),
+    ])
+    return
+
+
+# -- PCA visualization -------------------------------------------------------
+@app.cell(hide_code=True)
+def __(mo):
+    mo.md("### 4.1 PCA (Weighted Labels)")
+    return
+
+
+@app.cell
+def __(df_cluster, labels_by_k_w, mo, np, optimal_k_w, px):
+    from sklearn.decomposition import PCA as _PCA
+    _num_cols = [c for c in df_cluster.columns
+                 if c not in ["Gender", "Job", "Area", "CitySize", "Investments"]]
+    _df_num = df_cluster[_num_cols].astype(float)
+    _pca = _PCA(n_components=2, random_state=42)
+    _pca_r = _pca.fit_transform(_df_num)
+    _ev1, _ev2 = _pca.explained_variance_ratio_
+
+    import pandas as _ppca
+    _pca_df = _ppca.DataFrame({
+        "PC1": _pca_r[:, 0].tolist(), "PC2": _pca_r[:, 1].tolist(),
+        "Cluster": [f"Cluster {c}" for c in labels_by_k_w[optimal_k_w].tolist()],
+    })
+    _fig_pca = px.scatter(_pca_df, x="PC1", y="PC2", color="Cluster",
+                           title=f"PCA 2D — K-Medoids k={optimal_k_w} (numerical features)",
+                           labels={"PC1": f"PC1 ({_ev1:.1%} var.)", "PC2": f"PC2 ({_ev2:.1%} var.)"},
+                           opacity=0.55, color_discrete_sequence=px.colors.qualitative.Vivid)
+    _fig_pca.update_traces(marker=dict(size=4))
+    _fig_pca.update_layout(height=520)
+
+    mo.vstack([
+        mo.md(f"PC1+PC2 explain **{(_ev1+_ev2):.1%}** of numerical variance."),
+        mo.ui.plotly(_fig_pca),
+    ])
+    return
+
+
+# -- UMAP 2D -----------------------------------------------------------------
+@app.cell(hide_code=True)
+def __(mo):
+    mo.md(
+        r"""
+        ### 4.2 UMAP 2D (Weighted) — Non-linear Embedding on Gower Distance
+
+        $$\mathcal{L}(\text{UMAP}) = \sum_{e} \left[w_h \log\frac{w_h}{w_l} + (1-w_h)\log\frac{1-w_h}{1-w_l}\right]$$
+
+        UMAP minimises cross-entropy between the high-dimensional fuzzy simplicial set ($w_h$, from Gower)
+        and the low-dimensional representation ($w_l$). The embedding below was computed
+        on the full precomputed Gower matrix with `n_neighbors=15`, `min_dist=0.1`.
+        """
+    )
+    return
+
+
+@app.cell
+def __(labels_by_k_w, mo, optimal_k_w, px, umap2d_w):
+    import pandas as _pumap
+    _umap_df = _pumap.DataFrame({
+        "UMAP1": umap2d_w[:, 0].tolist(),
+        "UMAP2": umap2d_w[:, 1].tolist(),
+        "Cluster": [f"Cluster {c}" for c in labels_by_k_w[optimal_k_w].tolist()],
+    })
+    _fig_u2 = px.scatter(_umap_df, x="UMAP1", y="UMAP2", color="Cluster",
+                          title=f"UMAP 2D — K-Medoids k={optimal_k_w} (Gower metric, full dataset)",
+                          opacity=0.6, color_discrete_sequence=px.colors.qualitative.Vivid)
+    _fig_u2.update_traces(marker=dict(size=4))
+    _fig_u2.update_layout(height=560)
+    mo.ui.plotly(_fig_u2)
+    return
+
+
+# -- UMAP 3D -----------------------------------------------------------------
+@app.cell(hide_code=True)
+def __(mo):
+    mo.md("### 4.3 UMAP 3D (Weighted) — Interactive Exploration")
+    return
+
+
+@app.cell
+def __(labels_by_k_w, mo, optimal_k_w, px, umap3d_w):
+    import pandas as _pumap3
+    _umap3_df = _pumap3.DataFrame({
+        "UMAP1": umap3d_w[:, 0].tolist(),
+        "UMAP2": umap3d_w[:, 1].tolist(),
+        "UMAP3": umap3d_w[:, 2].tolist(),
+        "Cluster": [f"Cluster {c}" for c in labels_by_k_w[optimal_k_w].tolist()],
+    })
+    _fig_u3 = px.scatter_3d(_umap3_df, x="UMAP1", y="UMAP2", z="UMAP3",
+                              color="Cluster",
+                              title=f"UMAP 3D — K-Medoids k={optimal_k_w} (Gower metric)",
+                              opacity=0.65,
+                              color_discrete_sequence=px.colors.qualitative.Vivid)
+    _fig_u3.update_traces(marker=dict(size=3))
+    _fig_u3.update_layout(height=650)
+    mo.ui.plotly(_fig_u3)
+    return
+
+
+# ---------------------------------------------------------------------------
+# 8. Cluster Profiling
+# ---------------------------------------------------------------------------
+@app.cell(hide_code=True)
+def __(mo):
+    mo.md(
+        r"""
+        ## 5. Weighted Cluster Profiling
+
+        We characterise each cluster by computing mean numerical features and
+        mode categorical features. These profiles are used to derive interpretable
+        customer personas for downstream marketing strategy.
+        """
+    )
+    return
+
+
+@app.cell
+def __(df_cluster, go, labels_by_k_w, make_subplots, mo, optimal_k_w, px):
+    import pandas as _pprof
+
+    _cat_cols = ["Gender", "Job", "Area", "CitySize", "Investments"]
+    _num_cols = [c for c in df_cluster.columns if c not in _cat_cols]
+
+    _job_map  = {1:"Unemployed", 2:"Employee", 3:"Manager", 4:"Entrepreneur", 5:"Retired"}
+    _inv_map  = {1:"None", 2:"Lump Sum", 3:"Cap. Accum."}
+    _gen_map  = {0:"Male", 1:"Female"}
+    _area_map = {1:"North", 2:"Center", 3:"South"}
+
+    _df_p = df_cluster.copy()
+    _df_p["Cluster"] = labels_by_k_w[optimal_k_w]
+
+    _pal = px.colors.qualitative.Vivid
+
+    # Summary table
+    _rows = []
+    for _c in range(optimal_k_w):
+        _g = _df_p[_df_p["Cluster"] == _c]
+        _row = {"Cluster": _c, "N": len(_g), "%": f"{len(_g)/len(_df_p)*100:.1f}%"}
+        for _col in _num_cols:
+            _row[_col] = f"{float(_g[_col].mean()):.3f}"
+        _row["Job"]         = _job_map.get(int(_g["Job"].astype(float).mode()[0]), "?")
+        _row["Gender"]      = _gen_map.get(int(_g["Gender"].astype(float).mode()[0]), "?")
+        _row["Investments"] = _inv_map.get(int(_g["Investments"].astype(float).mode()[0]), "?")
+        _rows.append(_row)
+    _profile_df = _pprof.DataFrame(_rows)
+
+    # Radar chart
+    _radar = go.Figure()
+    for _c in range(optimal_k_w):
+        _g = _df_p[_df_p["Cluster"] == _c]
+        _vals = [float(_g[_col].mean()) for _col in _num_cols]
+        _radar.add_trace(go.Scatterpolar(
+            r=_vals + [_vals[0]], theta=_num_cols + [_num_cols[0]],
+            fill="toself", name=f"Cluster {_c}",
+            line_color=_pal[_c], opacity=0.75,
+        ))
+    _radar.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+        title=f"Radar — Numerical Feature Means per Cluster (k={optimal_k_w})",
+        height=500,
+    )
+
+    # Box plots
+    _key = ["Income", "Wealth", "Debt", "Saving", "Luxury", "FinEdu"]
+    _box = make_subplots(rows=1, cols=len(_key), subplot_titles=_key)
+    for _ci, _col in enumerate(_key):
+        for _c in range(optimal_k_w):
+            _g = _df_p[_df_p["Cluster"] == _c]
+            _box.add_trace(go.Box(y=_g[_col].tolist(), name=f"Cluster {_c}",
+                                   marker_color=_pal[_c], showlegend=(_ci == 0)), row=1, col=_ci + 1)
+    _box.update_layout(height=430, title_text="Key Financial Features by Cluster", boxmode="group")
+
+    mo.vstack([
+        mo.md("### Cluster Summary"),
+        mo.ui.table(_profile_df, selection=None),
+        mo.md("### Radar Profiles"),
+        mo.ui.plotly(_radar),
+        mo.md("### Financial Feature Distributions by Cluster"),
+        mo.ui.plotly(_box),
+    ])
+    return
+
+
+# ---------------------------------------------------------------------------
+# 9. Summary
+# ---------------------------------------------------------------------------
+@app.cell(hide_code=True)
+def __(mo, optimal_k_w):
+    mo.md(
+        f"""
+        ## 6. Weighted Conclusions & Business Recommendations
+
+        Our analysis identifies **k = {optimal_k_w}** as the statistically optimal number of
+        client segments by majority vote across Silhouette, Davies-Bouldin, and Calinski-Harabasz indices.
+
+        The Gower + K-Medoids approach provides three key advantages over simpler alternatives:
+        - **No information loss** — all 18 features (including categorical) contribute to cluster assignment
+        - **Scale invariance** — automatic range normalization prevents any single feature from dominating
+        - **Interpretable representatives** — each medoid is a real client that can serve as a segment archetype
+
+        ### Recommended Personas
+
+        | Segment | Profile | Recommended Products |
+        |---------|---------|---------------------|
+        | A | High Income / Wealth, ESG-oriented, high FinEdu | Sustainable portfolios, premium advisory |
+        | B | Mid Income, family-oriented, moderate Saving | Life insurance, education savings plans |
+        | C | Lower Income, higher Debt, low FinEdu | Financial literacy, debt consolidation |
+        """
+    )
+    return
+
+
+if __name__ == "__main__":
+    app.run()
 
 
 if __name__ == "__main__":
