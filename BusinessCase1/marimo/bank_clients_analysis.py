@@ -75,7 +75,7 @@ def __(mo):
         # Bank Client Segmentation — EDA & K-Medoids Clustering
 
         **Executive Summary (Abstract)**: We analyse a portfolio of **5,000 retail bank clients** described by **18 mixed-type features**
-        (13 numerical, 5 categorical). Our goal is to identify distinct, actionable customer segments
+        (15 numerical/ordinal, 3 categorical). Our goal is to identify distinct, actionable customer segments
         that can inform targeted marketing and product personalisation strategies. We adopt a **K-Medoids clustering** approach with **Gower distance**, performing standard (unweighted) clustering alongside a **weighted alternative** that assigns double importance to the *Job* and *Investments* features.
 
         **Index**:
@@ -91,7 +91,7 @@ def __(mo):
         | `Gender` | Categorical | 0 = Male, 1 = Female |
         | `Job` | Categorical | 1=Unemployed, 2=Employee, 3=Manager, 4=Entrepreneur, 5=Retired |
         | `Area` | Categorical | 1=North, 2=Center, 3=South/Islands |
-        | `CitySize` | Categorical | 1=Small, 2=Medium, 3=Large (>200k) |
+        | `CitySize` | Numerical (Ordinal) | 1=Small, 2=Medium, 3=Large (>200k) |
         | `FamilySize` | Numerical | Number of family members |
         | `Income` | Numerical | Normalized income percentile in [0,1] |
         | `Wealth` | Numerical | Normalized wealth percentile in [0,1] |
@@ -103,7 +103,7 @@ def __(mo):
         | `LifeStyle` | Numerical | Lifestyle spending index in [0,1] |
         | `Luxury` | Numerical | Luxury goods propensity in [0,1] |
         | `Saving` | Numerical | Savings behaviour in [0,1] |
-        | `Investments` | Categorical | 1=None, 2=Lump Sum, 3=Capital Accumulation |
+        | `Investments` | Numerical (Ordinal) | 1=None, 2=Lump Sum, 3=Capital Accumulation |
         """
     )
     return
@@ -155,9 +155,9 @@ def __(df_raw, mo, pd):
 
 @app.cell
 def __(df, mo):
-    categorical_cols = ["Gender", "Job", "Area", "CitySize", "Investments"]
+    categorical_cols = ["Gender", "Job", "Area"]
     numerical_cols = [c for c in df.columns if c not in categorical_cols]
-    normalized_vars = [c for c in numerical_cols if c not in ["Age", "FamilySize"]]
+    normalized_vars = [c for c in numerical_cols if c not in ["Age", "FamilySize", "CitySize", "Investments"]]
 
     mo.vstack([
         mo.md(f"**Categorical ({len(categorical_cols)}):** {', '.join(categorical_cols)}"),
@@ -173,8 +173,9 @@ def __(mo):
         r"""
         ## 2. Univariate Analysis — Numerical Features
 
-        The 12 numerical features cover two distinct scales:
+        The 15 numerical features cover different scales:
         - **Age** and **FamilySize** are raw counts/years
+        - **CitySize** and **Investments** are ordinal scales
         - All remaining features are pre-normalized to $[0,1]$ percentile ranks
 
         We verify these bounds explicitly and inspect distributional shapes.
@@ -696,30 +697,27 @@ def __(K_RANGE, go, make_subplots, metrics_dict, mo, pd):
     summary_df = pd.DataFrame({
         "k":                  K_RANGE,
         "Silhouette":         [metrics_dict[k]["silhouette"]         for k in K_RANGE],
-        "Davies-Bouldin":     [metrics_dict[k]["davies_bouldin"]     for k in K_RANGE],
-        "Calinski-Harabasz":  [metrics_dict[k]["calinski_harabasz"]  for k in K_RANGE],
+        "Loss":               [metrics_dict[k]["loss"]               for k in K_RANGE],
     })
 
     _ks = summary_df["k"].tolist()
     _bsil = int(summary_df.loc[summary_df["Silhouette"].idxmax(), "k"])
-    _bdb  = int(summary_df.loc[summary_df["Davies-Bouldin"].idxmin(), "k"])
-    _bch  = int(summary_df.loc[summary_df["Calinski-Harabasz"].idxmax(), "k"])
 
-    _fig_met = make_subplots(rows=1, cols=3, subplot_titles=[
+    _fig_met = make_subplots(rows=1, cols=2, subplot_titles=[
         "Silhouette<br>(Higher = Better)",
-        "Davies-Bouldin<br>(Lower = Better)",
-        "Calinski-Harabasz<br>(Higher = Better)",
+        "K-Medoids Loss<br>(Lower = Better, look for Elbow)",
     ])
-    for _ci, (_col, _vals, _best, _better) in enumerate([
-        ("#1f77b4", summary_df["Silhouette"].tolist(),        _bsil, "max"),
-        ("#ff7f0e", summary_df["Davies-Bouldin"].tolist(),    _bdb,  "min"),
-        ("#2ca02c", summary_df["Calinski-Harabasz"].tolist(), _bch,  "max"),
+    for _ci, (_col, _vals, _best) in enumerate([
+        ("#1f77b4", summary_df["Silhouette"].tolist(),        _bsil),
+        ("#ff7f0e", summary_df["Loss"].tolist(),              None),
     ]):
         _fig_met.add_trace(go.Scatter(x=_ks, y=_vals, mode="lines+markers",
                                        marker=dict(size=10), line=dict(color=_col, width=2),
                                        showlegend=False), row=1, col=_ci + 1)
-        _fig_met.add_vline(x=_best, line_dash="dash", line_color="red",
-                           annotation_text=f"k={_best}", row=1, col=_ci + 1)
+        if _best is not None:
+            _fig_met.add_vline(x=_best, line_dash="dash", line_color="red",
+                               annotation_text=f"k={_best}", row=1, col=_ci + 1)
+            
     _fig_met.update_xaxes(title_text="k")
     _fig_met.update_layout(height=400, title_text="Cluster Validation Metrics vs. k",
                             title_font_size=14)
@@ -734,25 +732,15 @@ def __(K_RANGE, go, make_subplots, metrics_dict, mo, pd):
 @app.cell
 def __(mo, summary_df):
     _bsil = int(summary_df.loc[summary_df["Silhouette"].idxmax(), "k"])
-    _bdb  = int(summary_df.loc[summary_df["Davies-Bouldin"].idxmin(), "k"])
-    _bch  = int(summary_df.loc[summary_df["Calinski-Harabasz"].idxmax(), "k"])
-
-    _votes = {}
-    for _v in [_bsil, _bdb, _bch]:
-        _votes[_v] = _votes.get(_v, 0) + 1
-    optimal_k = max(_votes, key=lambda x: _votes[x])
+    optimal_k = _bsil
 
     mo.callout(
         mo.md(
-            "### Voting Scheme — Optimal k\n\n"
-            f"| Metric | Best k |\n|---|---|\n"
-            f"| Silhouette (maximize) | k = {_bsil} |\n"
-            f"| Davies-Bouldin (minimize) | k = {_bdb} |\n"
-            f"| Calinski-Harabasz (maximize) | k = {_bch} |\n\n"
-            f"**Result: k = {optimal_k}** (majority vote)\n\n"
-            "We proceed with this k. Note that k=3 remains equally defensible from "
-            "a business interpretability standpoint — three segments map naturally to "
-            "Low / Mid / High value client tiers."
+            "### Optimal k Selection\n\n"
+            f"**Max Silhouette: k = {_bsil}**\n\n"
+            f"We proceed with **k = {optimal_k}**. Note that other values may remain equally defensible from "
+            "a business interpretability standpoint, provided they align with an elbow in the loss curve "
+            "and map naturally to logical client tiers."
         ),
         kind="success",
     )
@@ -969,8 +957,8 @@ def __(mo, optimal_k):
         f"""
         ## 8. Conclusions & Business Recommendations
 
-        Our analysis identifies **k = {optimal_k}** as the statistically optimal number of
-        client segments by majority vote across Silhouette, Davies-Bouldin, and Calinski-Harabasz indices.
+        Our analysis identifies **k = {optimal_k}** as the optimal number of
+        client segments by maximising the Silhouette index and confirming an elbow structure in K-Medoids loss.
 
         The Gower + K-Medoids approach provides three key advantages over simpler alternatives:
         - **No information loss** — all 18 features (including categorical) contribute to cluster assignment

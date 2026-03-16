@@ -6,7 +6,7 @@ Saves to results/ folder:
   distance_matrix.npy      — Gower pairwise distance matrix (N x N float32)
   labels_k{k}.npy          — cluster labels for k = 3, 4, 5, 6
   medoids_k{k}.npy         — medoid row indices
-  metrics.json             — Silhouette, Davies-Bouldin, Calinski-Harabasz per k
+  metrics.json             — Silhouette and K-Medoids Loss per k
   umap2d.npy               — UMAP 2D embedding (N x 2)
   umap3d.npy               — UMAP 3D embedding (N x 3)
 
@@ -19,7 +19,7 @@ import json
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
-from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+from sklearn.metrics import silhouette_score
 import gower
 import kmedoids
 import umap
@@ -31,11 +31,12 @@ RESULTS_DIR = HERE / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
 
 # ── Feature definitions ────────────────────────────────────────────────────
-CATEGORICAL_COLS = ["Gender", "Job", "Area", "CitySize", "Investments"]
+CATEGORICAL_COLS = ["Gender", "Job", "Area"]
 NUMERICAL_COLS = [
     "Age", "FamilySize", "Income", "Wealth", "Debt",
     "FinEdu", "ESG", "Digital", "BankFriend",
     "LifeStyle", "Luxury", "Saving",
+    "CitySize", "Investments",
 ]
 
 # ==========================================================================
@@ -122,6 +123,7 @@ print(f"  Removed {n_before - len(df)} working minors. Shape: {df.shape}")
 #
 # Isolation Forest uses only numerical features for scoring (it cannot
 # handle mixed types natively). The top 1% most anomalous clients are flagged.
+# Note: Anomalies driven mainly by categorical features are not flagged here.
 # ==========================================================================
 print("\nStep 5: Isolation Forest outlier removal (numerical features, contamination=0.01)...")
 iso = IsolationForest(contamination=0.01, random_state=42)
@@ -184,22 +186,19 @@ for suffix, dist_matrix in matrices.items():
         labels = np.array(res.labels, dtype=np.int32)
         
         sil  = float(silhouette_score(dist_matrix, labels, metric="precomputed"))
-        db   = float(davies_bouldin_score(dist_matrix, labels))
-        ch   = float(calinski_harabasz_score(dist_matrix, labels))
+        loss = float(res.loss)
         
         unique, counts = np.unique(labels, return_counts=True)
         sizes = dict(zip(unique.tolist(), counts.tolist()))
         
-        print(f"      sizes={sizes}  Sil={sil:.4f}  DB={db:.4f}  CH={ch:.2f}")
+        print(f"      sizes={sizes}  Sil={sil:.4f}  Loss={loss:.4f}")
         
         np.save(RESULTS_DIR / f"labels_k{k}{suffix}.npy", labels)
         np.save(RESULTS_DIR / f"medoids_k{k}{suffix}.npy", np.array(res.medoids, dtype=np.int32))
         
         metrics_dict[k] = {
             "silhouette": sil,
-            "davies_bouldin": db,
-            "calinski_harabasz": ch,
-            "loss": float(res.loss),
+            "loss": loss,
             "sizes": sizes,
         }
         
