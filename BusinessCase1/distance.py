@@ -31,18 +31,17 @@ def tanimoto_distance(
     y_bin: np.ndarray,
     weights: Optional[np.ndarray] = None
 ) -> float:
-    x_bin = np.asarray(x_bin)
-    y_bin = np.asarray(y_bin)
+    x_bin = np.asarray(x_bin, dtype=np.int32)
+    y_bin = np.asarray(y_bin, dtype=np.int32)
 
     if x_bin.shape != y_bin.shape:
         raise ValueError("`x_bin` and `y_bin` must have the same shape.")
-    if not np.all(np.isin(x_bin, [0, 1, False, True])):
+
+    if not np.all(np.isin(x_bin, [0, 1])):
         raise ValueError("`x_bin` must contain only binary values (0/1 or False/True).")
-    if not np.all(np.isin(y_bin, [0, 1, False, True])):
+    if not np.all(np.isin(y_bin, [0, 1])):
         raise ValueError("`y_bin` must contain only binary values (0/1 or False/True).")
 
-    x_bin = x_bin.astype(int)
-    y_bin = y_bin.astype(int)
     weights = _validate_weights(weights, x_bin.shape[0])
 
     intersection = np.sum(weights * ((x_bin == 1) & (y_bin == 1)))
@@ -92,8 +91,8 @@ def tanimoto_distance_matrix(
     Compute the weighted Tanimoto/Jaccard distance matrix for one-hot encoded
     categorical variables.
     """
-    X_bin = np.asarray(X_bin)
-    if not np.all(np.isin(X_bin, [0, 1, False, True])):
+    X_bin = np.asarray(X_bin).astype(np.int32)
+    if not np.all(np.isin(X_bin, [0, 1])):
         raise ValueError("`X_bin` must contain only binary values (0/1 or False/True).")
 
     X_bin = X_bin.astype(int)
@@ -249,6 +248,9 @@ def _compute_mixed_row(
     cat_weights: Optional[np.ndarray]
 ) -> list:
     """Compute one row of the mixed distance matrix (used by joblib)."""
+    # Force int32 cast here — joblib worker processes can lose dtype on deserialisation
+    X_cat = np.asarray(X_cat, dtype=np.int32)
+    
     n = len(X_num)
     row = np.zeros(n, dtype=float)
     for j in range(i + 1, n):
@@ -273,22 +275,8 @@ def mixed_matrix_distance(
     cat_weights: Optional[np.ndarray] = None,
     n_jobs: int = -1
 ) -> np.ndarray:
-    """
-    Compute the mixed distance matrix using parallel row computation.
-
-    Parameters
-    ----------
-    X_num     : array-like (n_samples, n_numerical_features) — must be min-max scaled
-    X_cat     : array-like (n_samples, n_categorical_features)
-                  label-encoded if cat_dist='Hamming',
-                  one-hot encoded if cat_dist='Tanimoto'
-    alpha     : weight for numerical component; (1-alpha) for categorical
-    num_dist  : {"L1", "L2", "Canberra"}
-    cat_dist  : {"Hamming", "Tanimoto"}
-    n_jobs    : number of parallel jobs (-1 = all cores)
-    """
     X_num = np.asarray(X_num)
-    X_cat = np.asarray(X_cat)
+    X_cat = np.asarray(X_cat, dtype=np.int32)  # cast once here, before workers see it
 
     if X_num.shape[0] != X_cat.shape[0]:
         raise ValueError("`X_num` and `X_cat` must have the same number of rows.")
@@ -299,16 +287,15 @@ def mixed_matrix_distance(
         num_dist, cat_dist, alpha, n_samples, n_jobs
     )
 
-    rows = Parallel(n_jobs=n_jobs)(
+    rows = Parallel(n_jobs=n_jobs, prefer="threads")(  # threads share memory, no serialisation
         delayed(_compute_mixed_row)(
             i, X_num, X_cat, alpha, num_dist, cat_dist, num_weights, cat_weights
         )
         for i in range(n_samples)
     )
 
-    # Reconstruct symmetric matrix from upper triangle
     D = np.array(rows, dtype=float)
-    D = D + D.T  # lower triangle is 0, so adding transpose fills it
+    D = D + D.T
 
     logger.info("Mixed distance matrix computed. Shape: %s", D.shape)
     return D
