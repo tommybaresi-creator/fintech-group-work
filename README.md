@@ -1,6 +1,5 @@
 <div align="center">
   <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python Badge"/>
-  <img src="https://img.shields.io/badge/Marimo-000000?style=for-the-badge&logo=jupyter&logoColor=white" alt="Marimo Badge"/>
   <img src="https://img.shields.io/badge/UV-FF4B4B?style=for-the-badge&logo=rust&logoColor=white" alt="UV Badge"/>
   <img src="https://img.shields.io/badge/Machine%20Learning-FF6F00?style=for-the-badge&logo=scikitlearn&logoColor=white" alt="ML Badge"/>
 
@@ -61,7 +60,7 @@ The analysis is procedurally structured across several interconnected notebooks 
 
 ## Quickstart: Execution Environment
 
-This project is built atop [uv](https://github.com/astral-sh/uv) to securely bundle dependency scopes safely, utilizing [marimo](https://marimo.io/) as a reactive computational backend capable of generating strictly reproducible, acyclic graphic notebooks.
+This project is built atop [uv](https://github.com/astral-sh/uv) to securely bundle dependency scopes safely.
 
 ### 1. Bootstrapping & Feature Precomputation
 
