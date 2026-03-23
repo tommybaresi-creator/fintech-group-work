@@ -35,6 +35,11 @@ Specifically, the distance between two multivariate observations leverages varyi
 ### 4. Bayesian Inference & Persona Updating
 The formulated static *Financial Personas* serve as a prior distribution for iterative refinement. Through a **Beta-Binomial Bayesian framework**, client attributes undergo continuous updates. This recursive methodology dynamically aligns broader segment-level profiles directly with incoming subject-specific numerical data.
 
+### 5. Economic Valuation of Customers
+To bridge the gap between behavioral segments and tangible economic profitability, the analytical pipeline generates a synthetic **Customer Lifetime Value (CLV)** proxy based on asset ratios, debt margins, and demographic multipliers. Crucially, two overlapping supervised methodologies are deployed simultaneously to cross-validate the structural integrity of the valuation and ensure they agree:
+- **Numerical Valuation & Propensity Mapping (XGBoost & Logistic)**: Gradient Boosting and Logistic Classifiers are utilized to compute an exact numerical economic value (expected revenues) alongside distinct product purchase propensities. This facilitates the calculation of net margins through Italian market channel cost adjustments and sensitivity sweeps.
+- **Categorical Value Profiling (GLVQ)**: A transparent classification network is tasked with finding broad value categories, discretizing the continuous economic value into natural strata (Low, Medium, High). Reversing the learned prototype codebooks formally extracts the multivariate archetypes characterizing premium clients. The convergence of these overlapping categorical and numerical models confirms the reliability of the profitability estimates.
+
 ---
 
 ## Key Findings & Results
@@ -43,6 +48,7 @@ The formulated static *Financial Personas* serve as a prior distribution for ite
 - **Optimum Metric Isolation**: **L1 norm + Tanimoto coefficient** emerged as the universally superior mixed-metric configuration. By actively demanding positive evidence of shared class membership, Tanimoto drastically outperformed basic Hamming overlaps, yielding an impressive **Silhouette Score of ~0.69** ($k=10$) in the native high-dimensional distance space.
 - **Cross-Space Stability**: Stress-testing conventional 17-dimensional distance-space clusters against a compressed 12-dimensional UMAP manifold (which achieved a **Silhouette Score of ~0.85** for $k=6$) produced an Adjusted Rand Index (ARI) of **0.82–0.98**. This extraordinary coherence confirms the integrity of the segments as genuine client groups rather than geometric artifacts.
 - **Primary Segments**: The optimal configuration reliably isolates three dominant, highly actionable client portfolios that together encompass roughly 75% of the examined data subset.
+- **Economic Value Drivers**: The supervised valuation models revealed that synthetic CLV is heavily dictated by non-linear interactions across wealth-to-debt ratios and digital-ESG engagement. The GLVQ network successfully isolated distinct *High-Value* client codebooks, establishing clear numerical thresholds that differentiate highly profitable portfolios from marginal accounts.
 
 ---
 
@@ -56,6 +62,8 @@ The analysis is procedurally structured across several interconnected notebooks 
 | `clustering_weighted.ipynb` | Executes exhaustive hyperparameter tuning ($\alpha$-sweeping) to deduce the exact optimum weight distributions across distance functions. |
 | `clustering_umap.ipynb` | Leverages UMAP manifold compressions as an independent clustering benchmark to aggressively strain-test distance-space assignments. |
 | `comparison.ipynb` | Yields the definitive ARI matrix demonstrating near-perfect congruence among unweighted, weighted, and latent-space methodologies. |
+| `economic_value.ipynb` | Integrates ML target engineering (XGBoost regression, Logistic propensities) with macroeconomic modeling to evaluate market margins and net revenue generation. |
+| `economic_value_lvq.ipynb` | Deploys Generalized Learning Vector Quantization (GLVQ) to classify continuous economic targets and extract inverse prototype codebooks characterizing premium buyers. |
 
 ---
 
