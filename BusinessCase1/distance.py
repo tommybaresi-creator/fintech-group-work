@@ -19,21 +19,9 @@ def build_gower_cat_mask(
     Build the boolean cat_features mask required by gower.gower_matrix,
     guaranteeing it matches the actual column order of df.
 
-    Why this exists
-    ---------------
-    gower.gower_matrix(df.values, cat_features=mask) trusts that mask[i]
-    corresponds to df.columns[i]. If you construct the mask independently
-    from the column list — or if the DataFrame was reordered at any point —
-    the mask silently mis-labels columns and Gower computes wrong distances
-    with no error or warning.
-
-    This function derives the mask directly from df.columns so the two are
-    always in sync, then logs the full column→type mapping so you can verify
-    it visually before the matrix is computed.
-
     Parameters
     ----------
-    df               : the DataFrame you will pass to gower.gower_matrix
+    df               : the DataFrame we will pass to gower.gower_matrix
     categorical_cols : names of columns that should be treated as categorical
 
     Returns
