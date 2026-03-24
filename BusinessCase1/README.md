@@ -23,6 +23,8 @@ The pipeline segments 5,000 retail bank clients (18 features: continuous financi
 
 **UMAP validation.** A 15-dimensional UMAP embedding is clustered independently (sil=0.431, k=10, stability ARI=0.891) and compared against the distance-space solution. Distance-space methods agree strongly with each other (ARI=0.824); UMAP finds different structure (ARI≈0.21), so the two approaches are treated as complementary views rather than converging evidence.
 
+
+
 ## Notebook Structure
 
 | Notebook | Focus |
@@ -37,7 +39,7 @@ The pipeline segments 5,000 retail bank clients (18 features: continuous financi
 Built with [uv](https://github.com/astral-sh/uv). Pre-computed distance matrices (base computation: ~2–5 min per config) are available on Google Drive:
 
 <div align="center">
-  <a href="https://drive.google.com/drive/folders/1WHr3FO-oPKigeAqhSIEJamlWKMWciQyu?usp=sharing>
+  <a href="https://drive.google.com/drive/folders/1WHr3FO-oPKigeAqhSIEJamlWKMWciQyu?usp=sharing">
     <img src="https://img.shields.io/badge/Google%20Drive-Cached%20Distances-4285F4?style=for-the-badge&logo=googledrive&logoColor=white" alt="Google Drive Cache"/>
   </a>
 </div>
