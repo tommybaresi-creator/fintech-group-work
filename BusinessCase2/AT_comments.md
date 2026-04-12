@@ -50,3 +50,22 @@ All features are motivated by financial theory first, then validated by correlat
 **Data leakage prevention**
 Scaling (MinMaxScaler) is fitted exclusively on the training set and applied to the test set.
 The raw feature construction (log transforms, ratios, interactions) involves no statistical fitting and is therefore safe to apply on the full dataset before splitting.
+
+---
+
+### Modeling approach — what we did and what changed vs the professor
+
+**Two separate binary classifiers (One-vs-All)**
+We kept the professor's architectural choice of training one model per target rather than a single multi-output classifier.
+The two targets have almost zero correlation (r = 0.011) and completely different drivers — Age/Wealth for Income, Income for Accumulation — so a single model would have to reconcile two unrelated problems. Separate models are simpler, more interpretable, and more robust.
+
+**Extended baseline**
+The professor's baseline included SVM and Naive Bayes only.
+We added Logistic Regression and Random Forest, giving us a broader picture of the precision/recall trade-off across model families before moving to advanced models.
+
+**Replaced the professor's feature set entirely**
+The professor used a "base" set (raw variables + log transforms) and an "engineered" set (base + Income/Wealth ratio), comparing the two. (Infact there was results base and results eng )
+We replaced both with a single theoretically-motivated feature set, built from scratch using EDA findings and financial lifecycle theory. It's a redesign.
+
+**Fixed a data leakage bug**
+The professor fits the MinMaxScaler on the full dataset before splitting, which leaks test set statistics into the scaler. We corrected this by splitting first, then fitting the scaler on the training set only and applying it to the test set. This ensures the test set remains truly unseen throughout the pipeline.
