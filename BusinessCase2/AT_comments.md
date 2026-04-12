@@ -51,6 +51,11 @@ All features are motivated by financial theory first, then validated by correlat
 Scaling (MinMaxScaler) is fitted exclusively on the training set and applied to the test set.
 The raw feature construction (log transforms, ratios, interactions) involves no statistical fitting and is therefore safe to apply on the full dataset before splitting.
 
+**Multicollinearity check**
+`Age`, `Age_sq` and `Age_x_Wealth` are correlated by construction. This is intentional and not problematic: tree-based models (Random Forest, XGBoost) are invariant to multicollinearity, and MinMaxScaler mitigates its effect on SVM and Logistic Regression. The heatmap confirms the pattern and rules out unexpected correlations elsewhere in the feature set.
+
+Notably, `Income_log` vs `Income_per_FM_log` show r=0.91 (not like 1.0), confirming that `FamilyMembers` introduces genuine additional signal and the per-capita features are not redundant with their gross counterparts.
+
 ---
 
 ### Modeling approach — what we did and what changed vs the professor
