@@ -1,22 +1,15 @@
 """
 Random Forest classifier for both investment targets.
 
-Key design decisions (Section 3.3 of the paper):
-- **No scaling.** A threshold split x_j > t is invariant to any strictly
-  monotonic transformation; linear scaling is a special case.
-- **F_E** (engineered feature set). RF cannot be harmed by pre-computed
-  interaction terms — it will simply learn equivalent splits anyway.
-- **Post-hoc isotonic calibration** via ``CalibratedClassifierCV``. RF
-  probability estimates are biased toward 0.5 (averaging over many trees
-  compresses probabilities). Isotonic regression corrects this without
-  assuming a sigmoidal error form (Section 3.6).
-- **Gini feature importances** stored for interpretability.
+Key design decisions:
+- No scaling. Tree splits are invariant to monotonic transforms.
+- F_E (primary) vs F_B (ablation). RF cannot be harmed by pre-computed
+  interactions — it learns equivalent splits anyway.
+- Post-hoc isotonic calibration (cv=5). RF probabilities are biased toward
+  0.5; isotonic regression corrects this nonparametrically.
+- Gini feature importances stored for interpretability.
 
-Saves artifacts to ``data/pickled_files/rand_forest/``.
-
-Run directly::
-
-    python -m utils.rand_forest
+Saves artifacts to data/pickled_files/rand_forest/.
 """
 
 import logging
@@ -46,14 +39,10 @@ from utils.preprocessing import (
     summarise_cv,
 )
 
-logging.basicConfig(
-    level=logging.INFO, format="%(name)s — %(levelname)s — %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(name)s — %(levelname)s — %(message)s")
 logger = logging.getLogger(__name__)
 
-PICKLE_DIR: Path = (
-    Path(__file__).parent.parent / "data" / "pickled_files" / "rand_forest"
-)
+PICKLE_DIR: Path = Path(__file__).parent.parent / "data" / "pickled_files" / "rand_forest"
 PICKLE_DIR.mkdir(parents=True, exist_ok=True)
 
 MODEL_NAME: str = "RandomForest"
@@ -64,55 +53,32 @@ def _make_model() -> RandomForestClassifier:
 
 
 def run_for_target(df, target_col: str) -> dict:
-    """
-    Train, calibrate, and evaluate Random Forest for one binary target.
-
-    Ablation: F_E (primary) vs F_B (baseline comparison).
-    Post-hoc isotonic calibration applied to the final model.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Full dataset as returned by :func:`~utils.preprocessing.load_data`.
-    target_col : str
-        Name of the binary target column.
-
-    Returns
-    -------
-    dict
-        Canonical result dictionary with ``'feature_importances'``,
-        ``'brier_score_pre_cal'``, ``'brier_score'``, and
-        ``'threshold_info'`` keys.
-    """
     logger.info("Target: %s", target_col)
     y = df[target_col]
 
-    # ------------------------------------------------------------------ F_E
+    # ---- F_E -----------------------------------------------------------------
     X_eng = build_features(df)
     X_tr_e, X_te_e, y_tr, y_te = split_data(X_eng, y)
 
+    # CV on uncalibrated model (calibration is post-hoc only)
     cv_raw_e = compute_cv_metrics(_make_model(), X_tr_e, y_tr)
-    logger.info(
-        "  [F_E] CV F1: %.3f ± %.3f",
-        np.mean(cv_raw_e["f1"]),
-        np.std(cv_raw_e["f1"]),
-    )
+    logger.info("  [F_E] CV  F1: %.3f ± %.3f", np.mean(cv_raw_e["f1"]), np.std(cv_raw_e["f1"]))
 
-    model_e = _make_model()
-    model_e.fit(X_tr_e, y_tr)
+    # Final model: calibrate with cv=5 (unfitted model passed — cv=5 refits internally)
+    cal_model_e = calibrate_model(_make_model(), X_tr_e, y_tr)
 
-    brier_pre = compute_brier_score(model_e, X_te_e, y_te)
-    logger.info("  [F_E] Brier pre-calibration:  %.4f", brier_pre)
+    # Store feature importances from uncalibrated base (CalibratedCV wraps it)
+    # We need an uncalibrated fit for importances
+    base_e = _make_model()
+    base_e.fit(X_tr_e, y_tr)
+    feature_importances = base_e.feature_importances_
 
-    cal_model_e = calibrate_model(model_e, X_tr_e, y_tr)
-    test_m_e = compute_test_metrics(cal_model_e, X_te_e, y_te)
+    brier_pre  = compute_brier_score(base_e, X_te_e, y_te)
+    test_m_e   = compute_test_metrics(cal_model_e, X_te_e, y_te)
     brier_post = compute_brier_score(cal_model_e, X_te_e, y_te)
+
+    logger.info("  [F_E] Brier: %.4f → %.4f (pre→post calibration)", brier_pre, brier_post)
     logger.info("  [F_E] Test F1 (thr=0.5): %.3f", test_m_e["f1"])
-    logger.info(
-        "  [F_E] Brier post-calibration: %.4f  (Δ=%.4f)",
-        brier_post,
-        brier_post - brier_pre,
-    )
 
     try:
         thr_info = select_threshold_pr_curve(cal_model_e, X_te_e, y_te)
@@ -120,20 +86,13 @@ def run_for_target(df, target_col: str) -> dict:
         logger.warning("Threshold optimisation failed: %s", exc)
         thr_info = None
 
-    # ------------------------------------------------------------------ F_B
+    # ---- F_B (ablation) ------------------------------------------------------
     X_base = build_baseline_features(df)
-    X_tr_b, X_te_b, _, _ = split_data(X_base, y)
-
-    cv_raw_b = compute_cv_metrics(_make_model(), X_tr_b, y_tr)
-    model_b = _make_model()
-    model_b.fit(X_tr_b, y_tr)
-    cal_model_b = calibrate_model(model_b, X_tr_b, y_tr)
-    test_m_b = compute_test_metrics(cal_model_b, X_te_b, y_te)
-    logger.info(
-        "  [F_B] Test F1: %.3f  (delta F_E−F_B = %.3f)",
-        test_m_b["f1"],
-        test_m_e["f1"] - test_m_b["f1"],
-    )
+    X_tr_b, X_te_b, y_tr_b, y_te_b = split_data(X_base, y)
+    cv_raw_b    = compute_cv_metrics(_make_model(), X_tr_b, y_tr_b)
+    cal_model_b = calibrate_model(_make_model(), X_tr_b, y_tr_b)
+    test_m_b    = compute_test_metrics(cal_model_b, X_te_b, y_te_b)
+    logger.info("  [F_B] Test F1: %.3f  (ΔF_E−F_B = %+.3f)", test_m_b["f1"], test_m_e["f1"] - test_m_b["f1"])
 
     return make_result_dict(
         model=cal_model_e,
@@ -146,18 +105,10 @@ def run_for_target(df, target_col: str) -> dict:
         target_name=target_col,
         model_name=MODEL_NAME,
         ablation={
-            "engineered": {
-                "cv_metrics_raw": cv_raw_e,
-                "cv_metrics_summary": summarise_cv(cv_raw_e),
-                "test_metrics": test_m_e,
-            },
-            "baseline": {
-                "cv_metrics_raw": cv_raw_b,
-                "cv_metrics_summary": summarise_cv(cv_raw_b),
-                "test_metrics": test_m_b,
-            },
+            "engineered": {"cv_metrics_raw": cv_raw_e, "cv_metrics_summary": summarise_cv(cv_raw_e), "test_metrics": test_m_e},
+            "baseline":   {"cv_metrics_raw": cv_raw_b, "cv_metrics_summary": summarise_cv(cv_raw_b), "test_metrics": test_m_b},
         },
-        feature_importances=model_e.feature_importances_,
+        feature_importances=feature_importances,
         brier_score_pre_cal=brier_pre,
         brier_score=brier_post,
         threshold_info=thr_info,
@@ -165,17 +116,12 @@ def run_for_target(df, target_col: str) -> dict:
 
 
 def main() -> None:
-    """Train, calibrate, evaluate, and pickle Random Forest for all targets."""
     df = load_data()
     for target in TARGETS:
         result = run_for_target(df, target)
         out_path = PICKLE_DIR / f"{target.lower()}.joblib"
-        try:
-            joblib.dump(result, out_path, compress=3)
-            logger.info("Saved: %s", out_path)
-        except OSError as exc:
-            logger.error("Failed to save %s: %s", out_path, exc)
-            raise
+        joblib.dump(result, out_path, compress=3)
+        logger.info("Saved: %s", out_path)
 
 
 if __name__ == "__main__":
