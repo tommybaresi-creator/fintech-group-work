@@ -1,0 +1,17 @@
+.DS_Store
+.venv/
+.env
+.ipynb_checkpoints
+__pycache__/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+.virtual_documents/
+
+.claude/
