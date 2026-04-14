@@ -1,25 +1,23 @@
 """
 Shared preprocessing utilities for BusinessCase2.
 
+All feature engineering decisions are documented in AT_comments.md and
+in the companion paper (Section 3 – Methodology).
+
 Design principles
 -----------------
-* ``build_baseline_features`` reconstructs **F_B** — the professor's feature set,
-  used as the ablation baseline and as the primary set for Naive Bayes and XGBoost.
-* ``build_features`` constructs **F_E** — our theoretically motivated engineered
-  set, used by LR, RF, MLP, ClassifierChain, and the ensemble components.
-* Scalers are **never** fit on the full dataset; they are always fit on the
-  training fold only, preventing data leakage.
-* ``compute_cv_metrics`` **clones** the model on every fold to prevent state
-  accumulation across folds — critical for ensemble models and calibrated wrappers.
-* ``compute_cv_metrics`` uses **10 folds** (outer loop) to guarantee adequate
-  statistical power for the Wilcoxon signed-rank test (minimum achievable p ≈ 0.063
-  with 5 folds is structurally insufficient at the 5% level).
-* ``calibrate_model`` uses ``cv=5`` (NOT ``cv='prefit'``) to avoid fitting the
-  isotonic calibrator on the same data used to train the base model.
+* build_baseline_features → F_B (professor's set, ablation baseline)
+* build_features          → F_E (theoretically motivated engineered set)
+* Scalers fitted on training fold only — never on full dataset (Section 3.3)
+* compute_cv_metrics clones the model every fold (prevents state accumulation)
+* 10 outer folds for Wilcoxon test statistical power (Section 3.5)
+* calibrate_model uses cv=5, NOT cv='prefit' (Section 3.6)
+* Warnings suppressed globally — clean output only
 """
 
 import logging
 import pickle
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -27,6 +25,7 @@ import numpy as np
 import pandas as pd
 from sklearn.base import clone
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
@@ -38,6 +37,12 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
+# Suppress all warnings globally for clean output
+warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -46,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 DATA_PATH: Path = Path(__file__).parent.parent / "Data" / "Dataset2_Needs.xls"
 FEATURE_STORE: Path = Path(__file__).parent.parent / "data" / "feature_store"
+PICKLE_ROOT: Path = Path(__file__).parent.parent / "data" / "pickled_files"
 
 FEATURE_NAMES: list = [
     "Age", "Age_sq", "Age_x_Wealth",
@@ -66,6 +72,10 @@ PRECISION_FLOOR: float = 0.75
 N_OUTER_FOLDS: int = 10
 N_INNER_FOLDS: int = 3
 
+# Confidence segmentation thresholds (Section 3 — recommendation pipeline)
+CONFIDENCE_HIGH: float = 0.75
+CONFIDENCE_LOW: float  = 0.40
+
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -73,25 +83,13 @@ N_INNER_FOLDS: int = 3
 
 
 def load_data() -> pd.DataFrame:
-    """
-    Load the Needs dataset. Strips column whitespace and drops ID.
-
-    Returns
-    -------
-    pd.DataFrame  shape (5000, 9)
-
-    Raises
-    ------
-    FileNotFoundError
-    """
+    """Load Needs dataset, strip column whitespace, drop ID."""
     if not DATA_PATH.exists():
         raise FileNotFoundError(f"Dataset not found at {DATA_PATH}.")
-    logger.info("Loading data from %s", DATA_PATH)
     df = pd.read_excel(DATA_PATH)
     df.columns = df.columns.str.strip()
     if "ID" in df.columns:
         df = df.drop(columns=["ID"])
-    logger.info("Loaded: shape=%s", df.shape)
     return df
 
 
@@ -101,20 +99,11 @@ def load_data() -> pd.DataFrame:
 
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Construct F_E — the theoretically motivated engineered feature set.
-
-    All transforms are deterministic and safe to apply before splitting.
-
-    Returns
-    -------
-    pd.DataFrame  columns == FEATURE_NAMES  (10 features)
-    """
+    """Construct F_E — 10 theoretically motivated features. Section 3.2."""
     required = {"Age", "Income", "Wealth", "FamilyMembers", "FinancialEducation", "RiskPropensity"}
     missing = required - set(df.columns)
     if missing:
         raise KeyError(f"Missing columns: {missing}")
-
     X = df.copy()
     X["Wealth_log"]        = np.log1p(X["Wealth"])
     X["Income_log"]        = np.log1p(X["Income"])
@@ -127,21 +116,11 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_baseline_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Construct F_B — the professor's baseline feature set (ablation reference).
-
-    F_B = {Age, Gender, FamilyMembers, FinancialEducation, RiskPropensity,
-           log(Wealth), log(Income)}
-
-    Returns
-    -------
-    pd.DataFrame  columns == BASELINE_FEATURE_NAMES  (7 features)
-    """
+    """Construct F_B — professor's 7-feature baseline. Section 3.2."""
     required = {"Age", "Gender", "FamilyMembers", "FinancialEducation", "RiskPropensity", "Income", "Wealth"}
     missing = required - set(df.columns)
     if missing:
         raise KeyError(f"Missing columns: {missing}")
-
     X = df.copy()
     X["Income_log"] = np.log1p(X["Income"])
     X["Wealth_log"] = np.log1p(X["Wealth"])
@@ -154,39 +133,21 @@ def build_baseline_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def save_feature_store(df: Optional[pd.DataFrame] = None) -> None:
-    """
-    Build F_E, F_B, and targets and persist to data/feature_store/.
-
-    Called once before model training. All model scripts load from here.
-    Raw construction involves no statistical fitting — safe to apply on
-    the full dataset before splitting.
-    """
+    """Build F_E, F_B, targets and persist to data/feature_store/."""
     if df is None:
         df = load_data()
-
     FEATURE_STORE.mkdir(parents=True, exist_ok=True)
-
     X_e = build_features(df)
     X_b = build_baseline_features(df)
     y   = df[TARGETS]
-
     for name, obj in [("F_E", X_e), ("F_B", X_b), ("targets", y)]:
-        path = FEATURE_STORE / f"{name}.pkl"
-        with open(path, "wb") as f:
+        with open(FEATURE_STORE / f"{name}.pkl", "wb") as f:
             pickle.dump(obj, f)
-        logger.info("Saved %s → %s  shape=%s", name, path, obj.shape)
-
-    logger.info("Feature store complete — 3 files written to %s", FEATURE_STORE)
+    logger.info("Feature store saved to %s", FEATURE_STORE)
 
 
 def load_feature_store() -> tuple:
-    """
-    Load F_E, F_B, and targets from data/feature_store/.
-
-    Returns
-    -------
-    tuple  (X_engineered, X_baseline, targets_df)
-    """
+    """Load (X_engineered, X_baseline, targets_df) from feature store."""
     paths = [FEATURE_STORE / f"{n}.pkl" for n in ("F_E", "F_B", "targets")]
     for p in paths:
         if not p.exists():
@@ -195,7 +156,6 @@ def load_feature_store() -> tuple:
     for p in paths:
         with open(p, "rb") as f:
             result.append(pickle.load(f))
-    logger.info("Feature store loaded from %s", FEATURE_STORE)
     return tuple(result)
 
 
@@ -205,25 +165,12 @@ def load_feature_store() -> tuple:
 
 
 def split_data(X, y, test_size=0.2, random_state=42):
-    """
-    Stratified split WITHOUT scaling.
-
-    Use for tree models (invariant to monotonic transforms) and Naive Bayes
-    (likelihood ratio invariant to linear rescaling).
-    """
+    """Stratified split WITHOUT scaling. Use for trees and Naive Bayes."""
     return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=y)
 
 
 def split_and_scale(X, y, test_size=0.2, random_state=42):
-    """
-    Stratified split + MinMaxScaler [0,1] fitted on training set only.
-
-    Use for SVM and MLP. Test values may exceed [0,1] — expected and correct.
-
-    WARNING: Do NOT pass the scaled output to compute_cv_metrics — the scaler
-    has already seen all training observations, causing CV leakage. Use a
-    Pipeline instead (see soft_voting_ens.py for the correct pattern).
-    """
+    """Stratified split + MinMaxScaler [0,1] on train only. Use for SVM and MLP."""
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=random_state, stratify=y
     )
@@ -234,15 +181,7 @@ def split_and_scale(X, y, test_size=0.2, random_state=42):
 
 
 def split_and_standardize(X, y, test_size=0.2, random_state=42):
-    """
-    Stratified split + StandardScaler fitted on training set only.
-
-    Use for Logistic Regression. MinMaxScaler is incorrect for L1/L2
-    regularization: it normalizes range but not variance, producing
-    incomparable effective regularization at the same λ. Section 3.3.
-
-    WARNING: same CV leakage caveat as split_and_scale. Use Pipeline for CV.
-    """
+    """Stratified split + StandardScaler on train only. Use for Logistic Regression."""
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=random_state, stratify=y
     )
@@ -257,27 +196,15 @@ def split_and_standardize(X, y, test_size=0.2, random_state=42):
 # ---------------------------------------------------------------------------
 
 
-def compute_cv_metrics(model, X_train, y_train, k_folds=N_OUTER_FOLDS):
+def compute_cv_metrics(model, X_train, y_train, k_folds=N_OUTER_FOLDS) -> dict:
     """
-    Stratified K-Fold CV returning raw per-fold score lists.
+    Stratified K-Fold CV with model cloning every fold.
 
-    The model is CLONED on every fold to prevent state accumulation across
-    folds. This is critical for ensemble models, calibrated wrappers, and
-    any estimator where fit() does not fully reinitialize internal state.
+    Model is cloned on every fold — prevents state accumulation across folds.
+    If a Pipeline is passed, the scaler inside refits per fold automatically.
+    Pass UNSCALED data when using a Pipeline.
 
-    If a Pipeline is passed, the scaler inside it is refitted on each fold's
-    training data automatically — the correct leakage-free pattern.
-
-    Parameters
-    ----------
-    model : fresh, unfitted sklearn estimator or Pipeline
-    X_train : unscaled DataFrame if using a Pipeline; pre-scaled otherwise
-    y_train : binary Series
-    k_folds : int, default N_OUTER_FOLDS (10)
-
-    Returns
-    -------
-    dict  {metric: [fold_score, ...]}  keys: accuracy, precision, recall, f1
+    Returns raw per-fold lists for Wilcoxon tests.
     """
     kf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
     metrics = {"accuracy": [], "precision": [], "recall": [], "f1": []}
@@ -296,7 +223,6 @@ def compute_cv_metrics(model, X_train, y_train, k_folds=N_OUTER_FOLDS):
         metrics["precision"].append(precision_score(y_val, y_hat, zero_division=0))
         metrics["recall"].append(recall_score(y_val, y_hat, zero_division=0))
         metrics["f1"].append(f1_score(y_val, y_hat, zero_division=0))
-        logger.debug("Fold %d/%d — F1: %.4f", fold_idx + 1, k_folds, metrics["f1"][-1])
 
     return metrics
 
@@ -307,7 +233,7 @@ def summarise_cv(cv_metrics: dict) -> dict:
 
 
 def compute_test_metrics(model, X_test, y_test) -> dict:
-    """Evaluate fitted model on the held-out test set at threshold=0.5."""
+    """Evaluate fitted model on test set at threshold=0.5."""
     y_hat = model.predict(X_test)
     return {
         "accuracy":  float(accuracy_score(y_test, y_hat)),
@@ -324,52 +250,65 @@ def compute_test_metrics(model, X_test, y_test) -> dict:
 
 def select_threshold_pr_curve(model, X_test, y_test, precision_floor=PRECISION_FLOOR) -> dict:
     """
-    Select the threshold maximising F1 subject to Precision >= precision_floor.
-
-    Fixing threshold at 0.5 ignores the asymmetric mis-selling cost from
-    MiFID II. This implements the correct business-driven selection.
-
-    Raises
-    ------
-    ValueError  if no threshold achieves the precision floor.
+    Select threshold maximising F1 subject to Precision >= precision_floor.
+    Fixing threshold at 0.5 ignores the MiFID II mis-selling cost. Section 3.4.
     """
     if not hasattr(model, "predict_proba"):
         raise ValueError("Model must support predict_proba.")
-
     y_scores = model.predict_proba(X_test)[:, 1]
     precisions, recalls, thresholds = precision_recall_curve(y_test, y_scores)
     precisions = precisions[:-1]
     recalls    = recalls[:-1]
-
     valid = precisions >= precision_floor
     if not valid.any():
         raise ValueError(
             f"No threshold achieves Precision >= {precision_floor:.2f}. "
-            f"Max achievable = {precisions.max():.3f}."
+            f"Max = {precisions.max():.3f}."
         )
-
-    f1_scores = 2 * precisions[valid] * recalls[valid] / np.clip(precisions[valid] + recalls[valid], 1e-9, None)
-    best      = np.argmax(f1_scores)
-
-    result = {
+    f1s  = 2 * precisions[valid] * recalls[valid] / np.clip(precisions[valid] + recalls[valid], 1e-9, None)
+    best = np.argmax(f1s)
+    return {
         "threshold": float(thresholds[valid][best]),
         "precision": float(precisions[valid][best]),
         "recall":    float(recalls[valid][best]),
-        "f1":        float(f1_scores[best]),
+        "f1":        float(f1s[best]),
         "precisions":  precisions,
         "recalls":     recalls,
         "thresholds":  thresholds,
     }
-    logger.info(
-        "PR threshold: %.3f → P=%.3f R=%.3f F1=%.3f",
-        result["threshold"], result["precision"], result["recall"], result["f1"],
-    )
-    return result
 
 
 def apply_threshold(model, X_test, threshold: float) -> np.ndarray:
-    """Apply a custom threshold to predict_proba scores."""
+    """Apply custom threshold to predict_proba scores."""
     return (model.predict_proba(X_test)[:, 1] >= threshold).astype(int)
+
+
+def get_propensity_scores(model, X) -> np.ndarray:
+    """
+    Extract calibrated propensity scores for ALL clients.
+    Used by recommendation engine for ranking and confidence segmentation.
+    """
+    if not hasattr(model, "predict_proba"):
+        raise ValueError("Model must support predict_proba.")
+    return model.predict_proba(X)[:, 1]
+
+
+def segment_by_confidence(propensity: np.ndarray) -> dict:
+    """
+    Segment clients into high/uncertain/low confidence groups.
+    High (>0.75): automate recommendation
+    Uncertain (0.40-0.75): route to human advisor
+    Low (<0.40): no action
+    Returns counts and indices for each segment.
+    """
+    high    = propensity > CONFIDENCE_HIGH
+    low     = propensity < CONFIDENCE_LOW
+    unsure  = ~high & ~low
+    return {
+        "high":    {"mask": high,   "count": int(high.sum()),   "indices": np.where(high)[0]},
+        "unsure":  {"mask": unsure, "count": int(unsure.sum()), "indices": np.where(unsure)[0]},
+        "low":     {"mask": low,    "count": int(low.sum()),    "indices": np.where(low)[0]},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -379,19 +318,13 @@ def apply_threshold(model, X_test, threshold: float) -> np.ndarray:
 
 def calibrate_model(model, X_train, y_train):
     """
-    Post-hoc calibration via isotonic regression with cv=5.
+    Post-hoc calibration via isotonic regression, cv=5.
 
-    Uses cv=5, NOT cv='prefit'. cv='prefit' fits the calibrator on the same
-    data used to train the base model, inflating calibration quality (leakage).
-    With cv=5 the base estimator is refitted internally across 5 folds.
+    Uses cv=5 NOT cv='prefit'. cv='prefit' calibrates on the same data
+    used to train the base model — calibration leakage. With cv=5 the base
+    estimator is refitted internally across 5 folds. Section 3.6.
 
-    Isotonic regression is preferred over Platt scaling: it is nonparametric
-    and does not assume a sigmoidal calibration error form
-
-    Parameters
-    ----------
-    model : UNFITTED base estimator (cv=5 refits it internally)
-    X_train, y_train : full training set
+    Pass UNFITTED model — cv=5 fits it internally.
     """
     calibrated = CalibratedClassifierCV(model, method="isotonic", cv=5)
     calibrated.fit(X_train, y_train)
@@ -399,17 +332,14 @@ def calibrate_model(model, X_train, y_train):
 
 
 def compute_brier_score(model, X_test, y_test) -> float:
-    """
-    Brier score: BS = (1/n) sum((p_hat - y)^2). Lower is better.
-    0.25 = no-skill baseline for balanced binary target.
-    """
+    """Brier score: lower=better, 0.25=no-skill baseline. Section 3.6."""
     if not hasattr(model, "predict_proba"):
         raise ValueError("Brier score requires predict_proba.")
     return float(brier_score_loss(y_test, model.predict_proba(X_test)[:, 1]))
 
 
 # ---------------------------------------------------------------------------
-# Label sensitivity (Section 3.1)
+# Label sensitivity
 # ---------------------------------------------------------------------------
 
 
@@ -430,16 +360,52 @@ def flip_labels(y: pd.Series, flip_rate: float, random_state: int = 42) -> pd.Se
 
 def scale_pos_weight(y: pd.Series) -> float:
     """
-    Compute scale_pos_weight = n_neg / n_pos for XGBoost.
-
-    Apply to IncomeInvestment only (38% positive). Caller is responsible
-    for not applying this to the balanced AccumulationInvestment target.
+    Compute scale_pos_weight = n_neg/n_pos for XGBoost.
+    Apply to IncomeInvestment only (38% positive). Section 2.1.
     """
     n_pos = int(y.sum())
     n_neg = len(y) - n_pos
-    spw = n_neg / max(n_pos, 1)
-    logger.debug("scale_pos_weight=%.3f (neg=%d, pos=%d)", spw, n_neg, n_pos)
-    return spw
+    return n_neg / max(n_pos, 1)
+
+
+# ---------------------------------------------------------------------------
+# Hyperparameter tuning
+# ---------------------------------------------------------------------------
+
+
+def tune_hyperparameters(model, param_grid: dict, X_train, y_train,
+                          n_iter: int = 20, cv: int = N_INNER_FOLDS,
+                          scoring: str = "f1") -> tuple:
+    """
+    RandomizedSearchCV for hyperparameter tuning (inner CV loop).
+
+    Parameters
+    ----------
+    model      : unfitted estimator or Pipeline
+    param_grid : dict of parameter distributions
+    X_train    : training features (unscaled if Pipeline)
+    y_train    : training labels
+    n_iter     : number of random configurations to try
+    cv         : inner CV folds (default N_INNER_FOLDS=3)
+    scoring    : optimisation metric (default 'f1')
+
+    Returns
+    -------
+    (best_estimator, best_params, best_score)
+    """
+    from sklearn.model_selection import RandomizedSearchCV
+    search = RandomizedSearchCV(
+        estimator=model,
+        param_distributions=param_grid,
+        n_iter=n_iter,
+        cv=StratifiedKFold(n_splits=cv, shuffle=True, random_state=42),
+        scoring=scoring,
+        random_state=42,
+        n_jobs=-1,
+        refit=True,
+    )
+    search.fit(X_train, y_train)
+    return search.best_estimator_, search.best_params_, search.best_score_
 
 
 # ---------------------------------------------------------------------------
@@ -450,15 +416,18 @@ def scale_pos_weight(y: pd.Series) -> float:
 def make_result_dict(
     model, scaler, cv_metrics_raw, test_metrics,
     y_test_true, y_test_pred, feature_names,
-    target_name, model_name, ablation=None, **extra,
+    target_name, model_name,
+    y_test_proba=None,
+    ablation=None,
+    best_params=None,
+    **extra,
 ) -> dict:
     """
-    Assemble the canonical result dict pickled by every model script.
+    Canonical result dict pickled by every model script.
 
-    Keys shared across all models: model, scaler, cv_metrics_raw,
-    cv_metrics_summary, test_metrics, y_test_true, y_test_pred,
-    feature_names, target_name, model_name, ablation.
-    Additional keys passed via **extra (shap_values, brier_score, etc.).
+    y_test_proba : np.ndarray, calibrated propensity scores predict_proba[:,1]
+                   Used by recommendation engine for ranking and segmentation.
+    best_params  : dict, hyperparameter tuning results (None if no tuning).
     """
     result = {
         "model":              model,
@@ -468,10 +437,31 @@ def make_result_dict(
         "test_metrics":       test_metrics,
         "y_test_true":        y_test_true,
         "y_test_pred":        y_test_pred,
+        "y_test_proba":       y_test_proba,
         "feature_names":      feature_names,
         "target_name":        target_name,
         "model_name":         model_name,
         "ablation":           ablation,
+        "best_params":        best_params,
     }
     result.update(extra)
     return result
+
+
+def save_result(result: dict, folder: str, target_name: str) -> Path:
+    """Save result dict as pickle to data/pickled_files/<folder>/."""
+    out_dir = PICKLE_ROOT / folder
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{target_name.lower()}.pkl"
+    with open(out_path, "wb") as f:
+        pickle.dump(result, f)
+    return out_path
+
+
+def load_result(folder: str, target_name: str) -> dict:
+    """Load result dict from data/pickled_files/<folder>/."""
+    path = PICKLE_ROOT / folder / f"{target_name.lower()}.pkl"
+    if not path.exists():
+        raise FileNotFoundError(f"No pickle at {path}. Run model script first.")
+    with open(path, "rb") as f:
+        return pickle.load(f)
