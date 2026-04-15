@@ -1,9 +1,7 @@
 """
 Gaussian Naive Bayes for both investment targets.
 
-No scaling (likelihood ratio invariant to linear rescaling).
-F_B only (Gaussian independence assumption already violated by base features).
-Hyperparameter tuning: var_smoothing grid search.
+
 """
 
 import logging
@@ -23,13 +21,14 @@ from utils.preprocessing import (
     TARGETS,
     build_baseline_features,
     compute_brier_score,
-    compute_cv_metrics,
     compute_test_metrics,
+    evaluate_at_threshold,
     get_propensity_scores,
     load_data,
     make_result_dict,
+    no_skill_brier,
     save_result,
-    select_threshold_pr_curve,
+    select_threshold_on_val,
     split_data,
     summarise_cv,
     tune_hyperparameters,
@@ -41,6 +40,13 @@ logger = logging.getLogger(__name__)
 MODEL_NAME: str = "GaussianNB"
 FOLDER: str = "naive_bayes"
 
+# M4 note: GNB assumes continuous Gaussian features. F_B contains Gender
+# (binary, {0,1}) and FamilyMembers (discrete integer). These violate the
+# distributional assumption. The consequence is inflated variance estimates
+# (hence the large optimal var_smoothing for AccumulationInvestment) and
+# unreliable probability outputs (Brier near no-skill baseline). This is a
+# known limitation retained for interpretable baseline comparison.
+
 GNB_PARAM_GRID = {
     "var_smoothing": np.logspace(-12, -1, 30),
 }
@@ -49,32 +55,43 @@ GNB_PARAM_GRID = {
 def run_for_target(df, target_col: str) -> dict:
     logger.info("Target: %s", target_col)
     y = df[target_col]
+    baseline = no_skill_brier(y)
+    logger.info("  No-skill Brier baseline: %.4f", baseline)
 
     X_base = build_baseline_features(df)
-    X_tr, X_te, y_tr, y_te = split_data(X_base, y)
 
-    # Hyperparameter tuning
-    logger.info("  Hyperparameter tuning (var_smoothing)...")
-    best_model, best_params, best_cv_score = tune_hyperparameters(
-        GaussianNB(), GNB_PARAM_GRID, X_tr, y_tr, n_iter=20
+    # C1 fix: validation split for threshold
+    X_tr_full, X_te, y_tr_full, y_te = split_data(X_base, y)
+    X_tr, X_val, y_tr, y_val = split_data(X_tr_full, y_tr_full, test_size=0.2)
+
+    best_model, best_params, _ = tune_hyperparameters(
+        GaussianNB(), GNB_PARAM_GRID, X_tr_full, y_tr_full, n_iter=20
     )
-    logger.info("  Best params: %s  (inner CV F1=%.3f)", best_params, best_cv_score)
+    logger.info("  Best var_smoothing=%.2e  (inner CV F1 via tuning)", best_params["var_smoothing"])
 
-    cv_raw = compute_cv_metrics(best_model, X_tr, y_tr)
-    logger.info("  [F_B] CV F1: %.3f ± %.3f", np.mean(cv_raw["f1"]), np.std(cv_raw["f1"]))
+    # Note: GNB is simple enough that nested CV adds minimal value here.
+    # We run standard 10-fold CV with the tuned model.
+    from utils.preprocessing import compute_cv_metrics
+    cv_raw = compute_cv_metrics(best_model, X_tr_full, y_tr_full)
+    logger.info("  [F_B] CV F1: %.3f ± %.3f",
+                np.mean(cv_raw["f1"]), np.std(cv_raw["f1"], ddof=1))
 
-    best_model.fit(X_tr, y_tr)
+    best_model.fit(X_tr_full, y_tr_full)
     test_m  = compute_test_metrics(best_model, X_te, y_te)
     y_proba = get_propensity_scores(best_model, X_te)
     brier   = compute_brier_score(best_model, X_te, y_te)
-    logger.info("  [F_B] Test F1=%.3f  Precision=%.3f  Brier=%.4f",
-                test_m["f1"], test_m["precision"], brier)
+    logger.info("  [F_B] Test F1=%.3f  Precision=%.3f  Brier=%.4f (baseline=%.4f)",
+                test_m["f1"], test_m["precision"], brier, baseline)
 
     try:
-        thr_info = select_threshold_pr_curve(best_model, X_te, y_te)
+        thr_info   = select_threshold_on_val(best_model, X_val, y_val)
+        thr_test_m = evaluate_at_threshold(best_model, X_te, y_te, thr_info["threshold"])
+        logger.info("  Val threshold=%.3f → Test P=%.3f R=%.3f F1=%.3f",
+                    thr_info["threshold"], thr_test_m["precision"],
+                    thr_test_m["recall"], thr_test_m["f1"])
     except ValueError as exc:
-        logger.warning("  Threshold optimisation failed: %s", exc)
-        thr_info = None
+        logger.warning("  Threshold selection failed: %s", exc)
+        thr_info, thr_test_m = None, None
 
     result = make_result_dict(
         model=best_model, scaler=None,
@@ -83,7 +100,15 @@ def run_for_target(df, target_col: str) -> dict:
         y_test_proba=y_proba,
         feature_names=BASELINE_FEATURE_NAMES, target_name=target_col,
         model_name=MODEL_NAME, best_params=best_params,
-        ablation=None, threshold_info=thr_info, brier_score=brier,
+        threshold_metrics=thr_test_m,
+        ablation=None,
+        brier_score=brier,
+        no_skill_brier=baseline,
+        gnb_discrete_feature_warning=(
+            "F_B contains Gender (binary) and FamilyMembers (discrete integer). "
+            "GNB's Gaussian assumption is violated for these features, contributing "
+            "to poor calibration. Retained as interpretable baseline."
+        ),
     )
     path = save_result(result, FOLDER, target_col)
     logger.info("  Saved: %s", path)

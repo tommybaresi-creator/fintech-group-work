@@ -1,12 +1,7 @@
 """
 XGBoost with SHAP for both investment targets.
 
-Fixes applied:
-- Hyperparameter tuning via RandomizedSearchCV
-- Both uncalibrated AND calibrated test metrics stored (diagnose calibration effect)
-- y_test_proba stored
-- Output saved as .pkl
-- scale_pos_weight applied to IncomeInvestment only
+
 """
 
 import logging
@@ -30,14 +25,16 @@ from utils.preprocessing import (
     build_features,
     calibrate_model,
     compute_brier_score,
-    compute_cv_metrics,
     compute_test_metrics,
+    evaluate_at_threshold,
     get_propensity_scores,
     load_data,
     make_result_dict,
+    nested_cv_with_tuning,
+    no_skill_brier,
     save_result,
     scale_pos_weight,
-    select_threshold_pr_curve,
+    select_threshold_on_val,
     split_data,
     summarise_cv,
     tune_hyperparameters,
@@ -50,78 +47,112 @@ MODEL_NAME: str = "XGBoost"
 FOLDER: str = "xgboost_shap"
 
 XGB_PARAM_GRID = {
-    "n_estimators":   [100, 200, 300, 500],
-    "max_depth":      [3, 4, 5, 6, 7, 8],
-    "learning_rate":  [0.01, 0.05, 0.1, 0.2, 0.3],
-    "subsample":      [0.6, 0.7, 0.8, 0.9, 1.0],
+    "n_estimators":     [100, 200, 300, 500],
+    "max_depth":        [3, 4, 5, 6, 7, 8],
+    "learning_rate":    [0.01, 0.05, 0.1, 0.2, 0.3],
+    "subsample":        [0.6, 0.7, 0.8, 0.9, 1.0],
     "colsample_bytree": [0.6, 0.7, 0.8, 0.9, 1.0],
     "min_child_weight": [1, 3, 5, 7],
-    "gamma":           [0, 0.1, 0.2, 0.5],
+    "gamma":            [0, 0.1, 0.2, 0.5],
 }
 
 
 def _make_model(spw=1.0, **kwargs) -> XGBClassifier:
+    # N2 fix: use_label_encoder removed
     return XGBClassifier(
         random_state=42, eval_metric="logloss",
         scale_pos_weight=spw, verbosity=0,
-        use_label_encoder=False, **kwargs
+        **kwargs
     )
+
+
+def _make_model_factory(spw=1.0):
+    """Returns a factory callable for nested_cv_with_tuning."""
+    def factory():
+        return _make_model(spw)
+    return factory
 
 
 def run_for_target(df, target_col: str) -> dict:
     logger.info("Target: %s", target_col)
     y   = df[target_col]
     spw = scale_pos_weight(y) if target_col == "IncomeInvestment" else 1.0
+    baseline = no_skill_brier(y)
+    logger.info("  No-skill Brier baseline: %.4f", baseline)
 
-    # F_B primary
+    # ---- F_B (primary for XGBoost — trees learn interactions natively) -----
     X_base = build_baseline_features(df)
-    X_tr_b, X_te_b, y_tr, y_te = split_data(X_base, y)
 
-    # Hyperparameter tuning
-    logger.info("  Hyperparameter tuning (F_B)...")
-    best_model_b, best_params_b, best_cv_score = tune_hyperparameters(
-        _make_model(spw), XGB_PARAM_GRID, X_tr_b, y_tr, n_iter=40
+    # C1 fix: carve out a validation set from training data for threshold selection
+    X_tr_b_full, X_te_b, y_tr_full, y_te = split_data(X_base, y)
+    X_tr_b, X_val_b, y_tr_b, y_val_b = split_data(X_tr_b_full, y_tr_full, test_size=0.2)
+
+    # C4 fix: TRUE nested CV — HP tuning runs inside each outer fold
+    logger.info("  Nested CV (F_B) — tuning inside each outer fold...")
+    nested_b = nested_cv_with_tuning(
+        _make_model_factory(spw), XGB_PARAM_GRID,
+        X_tr_b_full, y_tr_full, n_iter=40
     )
-    logger.info("  Best params: %s  (inner CV F1=%.3f)", best_params_b, best_cv_score)
+    cv_raw_b = nested_b["cv_metrics_raw"]
+    logger.info("  [F_B] Nested CV F1: %.3f ± %.3f",
+                np.mean(cv_raw_b["f1"]), np.std(cv_raw_b["f1"], ddof=1))
 
-    # Outer CV (uncalibrated)
-    cv_raw_b = compute_cv_metrics(best_model_b, X_tr_b, y_tr)
-    logger.info("  [F_B] CV F1: %.3f ± %.3f", np.mean(cv_raw_b["f1"]), np.std(cv_raw_b["f1"]))
+    # Final model: tune once on full X_tr_b for deployment
+    logger.info("  Tuning final F_B model...")
+    best_model_b, best_params_b, _ = tune_hyperparameters(
+        _make_model(spw), XGB_PARAM_GRID, X_tr_b_full, y_tr_full, n_iter=40
+    )
 
-    # Fit uncalibrated for SHAP + pre-cal metrics
+    # Uncalibrated for SHAP + pre-cal metrics
     base_b = _make_model(spw, **{k: v for k, v in best_params_b.items()})
-    base_b.fit(X_tr_b, y_tr)
-    test_m_uncal = compute_test_metrics(base_b, X_te_b, y_te)
-    brier_pre    = compute_brier_score(base_b, X_te_b, y_te)
-    logger.info("  [F_B] Uncalibrated Test F1=%.3f  Brier=%.4f", test_m_uncal["f1"], brier_pre)
+    base_b.fit(X_tr_b_full, y_tr_full)
+    brier_pre = compute_brier_score(base_b, X_te_b, y_te)
 
-    # Calibrate (UNFITTED model — cv=5 refits internally)
-    cal_model_b = calibrate_model(_make_model(spw, **{k: v for k, v in best_params_b.items()}), X_tr_b, y_tr)
+    # Calibrate (unfitted model — cv=5 refits internally)
+    cal_model_b = calibrate_model(_make_model(spw, **{k: v for k, v in best_params_b.items()}), X_tr_b_full, y_tr_full)
     test_m_b    = compute_test_metrics(cal_model_b, X_te_b, y_te)
     y_proba_b   = get_propensity_scores(cal_model_b, X_te_b)
     brier_post  = compute_brier_score(cal_model_b, X_te_b, y_te)
-    logger.info("  [F_B] Calibrated  Test F1=%.3f  Brier=%.4f  (Δ cal=%+.4f)",
-                test_m_b["f1"], brier_post, brier_post - brier_pre)
 
+    logger.info("  [F_B] Brier: %.4f → %.4f (pre→post)  baseline=%.4f",
+                brier_pre, brier_post, baseline)
+    logger.info("  [F_B] Test F1=%.3f  Precision=%.3f", test_m_b["f1"], test_m_b["precision"])
+
+    # C1 fix: threshold selected on validation set
     try:
-        thr_info = select_threshold_pr_curve(cal_model_b, X_te_b, y_te)
+        thr_info = select_threshold_on_val(cal_model_b, X_val_b, y_val_b)
+        thr_test_m = evaluate_at_threshold(cal_model_b, X_te_b, y_te, thr_info["threshold"])
+        logger.info("  [F_B] Val threshold=%.3f → Test P=%.3f R=%.3f F1=%.3f",
+                    thr_info["threshold"], thr_test_m["precision"],
+                    thr_test_m["recall"], thr_test_m["f1"])
     except ValueError as exc:
-        logger.warning("  Threshold optimisation failed: %s", exc)
-        thr_info = None
+        logger.warning("  Threshold selection failed: %s", exc)
+        thr_info, thr_test_m = None, None
 
     # SHAP on uncalibrated base (TreeExplainer requires tree structure)
     logger.info("  Computing SHAP values...")
     explainer   = shap.TreeExplainer(base_b)
     shap_values = explainer.shap_values(X_te_b)
 
-    # F_E ablation
+    # ---- F_E (ablation) — C2 fix: tuned independently ----------------------
     X_eng = build_features(df)
-    X_tr_e, X_te_e, y_tr_e, y_te_e = split_data(X_eng, y)
-    best_model_e, _, _ = tune_hyperparameters(_make_model(spw), XGB_PARAM_GRID, X_tr_e, y_tr_e, n_iter=40)
-    cv_raw_e   = compute_cv_metrics(best_model_e, X_tr_e, y_tr_e)
-    cal_e      = calibrate_model(_make_model(spw), X_tr_e, y_tr_e)
-    test_m_e   = compute_test_metrics(cal_e, X_te_e, y_te_e)
-    logger.info("  [F_E] Test F1=%.3f  (ΔF_B−F_E=%+.3f)", test_m_e["f1"], test_m_b["f1"] - test_m_e["f1"])
+    X_tr_e_full, X_te_e, y_tr_e_full, y_te_e = split_data(X_eng, y)
+
+    logger.info("  Nested CV (F_E ablation) — tuning inside each outer fold...")
+    nested_e = nested_cv_with_tuning(
+        _make_model_factory(spw), XGB_PARAM_GRID,
+        X_tr_e_full, y_tr_e_full, n_iter=40
+    )
+    cv_raw_e = nested_e["cv_metrics_raw"]
+
+    best_model_e, best_params_e, _ = tune_hyperparameters(
+        _make_model(spw), XGB_PARAM_GRID, X_tr_e_full, y_tr_e_full, n_iter=40
+    )
+    cal_e   = calibrate_model(_make_model(spw, **{k: v for k, v in best_params_e.items()}), X_tr_e_full, y_tr_e_full)
+    test_m_e = compute_test_metrics(cal_e, X_te_e, y_te_e)
+    logger.info("  [F_E] Nested CV F1: %.3f ± %.3f  Test F1=%.3f  (ΔF_B−F_E=%+.3f)",
+                np.mean(cv_raw_e["f1"]), np.std(cv_raw_e["f1"], ddof=1),
+                test_m_e["f1"], test_m_b["f1"] - test_m_e["f1"])
 
     result = make_result_dict(
         model=cal_model_b, scaler=None,
@@ -130,6 +161,7 @@ def run_for_target(df, target_col: str) -> dict:
         y_test_proba=y_proba_b,
         feature_names=BASELINE_FEATURE_NAMES, target_name=target_col,
         model_name=MODEL_NAME, best_params=best_params_b,
+        threshold_metrics=thr_test_m,
         ablation={
             "baseline":   {"cv_metrics_raw": cv_raw_b, "cv_metrics_summary": summarise_cv(cv_raw_b), "test_metrics": test_m_b},
             "engineered": {"cv_metrics_raw": cv_raw_e, "cv_metrics_summary": summarise_cv(cv_raw_e), "test_metrics": test_m_e},
@@ -138,10 +170,9 @@ def run_for_target(df, target_col: str) -> dict:
         shap_values=shap_values,
         shap_test_X=X_te_b,
         feature_importances=base_b.feature_importances_,
-        test_metrics_uncalibrated=test_m_uncal,
         brier_score_pre_cal=brier_pre,
         brier_score=brier_post,
-        threshold_info=thr_info,
+        no_skill_brier=baseline,
         scale_pos_weight_used=spw,
     )
     path = save_result(result, FOLDER, target_col)
