@@ -51,7 +51,7 @@ BusinessCase2/
 │   └── Dataset2_Needs.xls          ← raw dataset (5 000 clients, never modified)
 │
 ├── data/
-│   └── pickled_files/              ← generated model artifacts (gitignored)
+│   └── pickled_files/              ← generated model artifacts
 │       ├── linear_reg/
 │       ├── naive_bayes/
 │       ├── rand_forest/
@@ -80,7 +80,6 @@ BusinessCase2/
 ├── data_assumptions.ipynb          ← statistical assumption tests
 ├── EstimatingNeedsPoliMI.ipynb     ← EDA (reference, unchanged)
 │
-├── AT_comments.md                  ← design decisions & source of truth
 ├── pyproject.toml
 └── README.md
 ```
@@ -116,39 +115,6 @@ flowchart TD
 
 ---
 
-## Model Catalogue
-
-| Tier | Script | Model | Features | Scaling | Special |
-|------|--------|-------|----------|---------|---------|
-| 1 | `linear_reg.py` | Logistic Regression (L1) | **F_E** | StandardScaler | `class_weight='balanced'` for Income |
-| 1 | `naive_bayes.py` | Gaussian Naive Bayes | **F_B** | None | Bayesian priors handle imbalance |
-| 2 | `rand_forest.py` | Random Forest (n=100) | F_E | None | Isotonic calibration |
-| 2 | `xgboost_shap.py` | XGBoost + SHAP | **F_B** | None | `scale_pos_weight` for Income · Isotonic cal. · SHAP TreeExplainer |
-| 3 | `mlp.py` | MLP `input→16→8→1` | F_E | MinMaxScaler | BatchNorm · Dropout(0.2) · ReduceLROnPlateau |
-| 4 | `classifier_chain.py` | ClassifierChain(XGBoost) | F_E | MinMaxScaler | Chain order: **Accum → Income** (life-cycle prior) |
-| 4 | `soft_voting_ens.py` | Soft Voting: LR+XGB+SVM | F_E | Per-estimator Pipelines | Best-performing model |
-| 4 | `hard_voting_ens.py` | Hard Voting: LR+XGB+SVM | F_E | Per-estimator Pipelines | Comparison baseline for soft voting |
-
-
-> **Why separate feature sets?** Tree models (XGBoost, RF) learn interactions natively — pre-computing them adds correlated features that dilute SHAP importances without lifting F1. Logistic Regression cannot learn interactions; `F_E` provides significant, statistically verified lift (Wilcoxon p < 0.05). NaiveBayes uses `F_B` only: adding interactions compounds the independence assumption violation.
-
----
-
-## Evaluation Design
-
-### MiFID II constraints
-- **Primary metric**: F1-score (balanced precision–recall)
-- **Hard constraint**: Precision ≥ 0.75 on all positive recommendations (MiFID II compliance)
-- **Threshold selection**: PR-curve optimisation, not fixed at 0.5
-
-### Statistical framework
-- **Outer loop**: 10-fold stratified CV (5 folds → minimum achievable p ≈ 0.063, structurally failing α = 0.05)
-- **Model comparison**: Wilcoxon signed-rank test on 10 outer-fold F1 scores
-- **Tie-breaking**: Occam's razor selects the simpler model when p > 0.05
-- **Calibration**: Isotonic regression for RF and XGBoost; Brier score pre/post
-
----
-
 ## How to Run
 
 ### 1. Install dependencies
@@ -177,21 +143,6 @@ Each notebook loads all pickled results and produces:
 - Label sensitivity: F1 at 5% and 10% label corruption
 - Confusion matrix for the winning model
 - SHAP global feature importances (from XGBoost pickle)
-
-
----
-
-## Key Design Rationale
-
-### Why not a uniform preprocessing pipeline?
-
-| Model | Scaler | Reason |
-|-------|--------|--------|
-| Logistic Regression | **StandardScaler** | L1/L2 regularisation penalty is proportional to coefficient magnitude; MinMaxScaler preserves unequal variances causing incomparable effective penalties at the same λ |
-| Gaussian Naive Bayes | **None** | GNB likelihood ratio depends only on within-class distributions; rescaling changes μ and σ proportionally, leaving the ratio invariant |
-| SVM (RBF) | **MinMaxScaler** | RBF kernel measures Euclidean distance; a feature in [18,97] contributes up to 6241 to squared distance vs 1 for a [0,1] feature |
-| Random Forest / XGBoost | **None** | Threshold splits `x > t` are invariant to any strictly monotonic transformation |
-| MLP | **MinMaxScaler** | Heterogeneous scales slow gradient descent; [0,1] matches the Sigmoid output activation |
 
 
 ## Pickle Format
