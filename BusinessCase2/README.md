@@ -75,6 +75,7 @@ BusinessCase2/
 ├── file_sanity.ipynb               ← data quality gate (run first)
 ├── bestmodel_income.ipynb          ← model comparison for IncomeInvestment
 ├── bestmodel_accumulation.ipynb    ← model comparison for AccumulationInvestment
+├── recommendation_system.ipynb     ← recommendation system (run after the models)
 ├── rec_sys.ipynb                   ← recommendation engine
 ├── svd.ipynb                       ← SVD collaborative filter
 ├── data_assumptions.ipynb          ← statistical assumption tests
@@ -128,9 +129,10 @@ uv sync          # installs all dependencies from pyproject.toml
 
 Open the notebooks in this order:
 
-```
+```text
 bestmodel_income.ipynb          ← IncomeInvestment model selection
 bestmodel_accumulation.ipynb    ← AccumulationInvestment model selection
+recommendation_system.ipynb     ← Personalized recommendation system
 ```
 
 Each notebook loads all pickled results and produces:
