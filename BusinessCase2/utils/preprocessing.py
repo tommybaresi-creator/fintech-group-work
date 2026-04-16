@@ -475,6 +475,7 @@ def tune_hyperparameters(
     n_iter: int = 20,
     cv: int = N_INNER_FOLDS,
     scoring: str = "f1",
+    error_score: str = "raise",
 ) -> Tuple[Any, dict, float]:
     """
     Run RandomizedSearchCV as the inner CV loop for hyperparameter tuning.
