@@ -683,7 +683,7 @@ def show_winner() -> None:
                     "cv_f1_std":         np.std(f1_folds, ddof=1),
                     "eff_precision":     eff_prec,
                     "test_f1":           r["test_metrics"]["f1"],
-                    "thr_f1":            r.get("threshold_metrics", {}).get("f1"),
+                    "thr_f1": (r.get("threshold_metrics") or {}).get("f1"),
                     "passes_constraint": eff_prec >= PRECISION_FLOOR,
                 }
             except FileNotFoundError:
