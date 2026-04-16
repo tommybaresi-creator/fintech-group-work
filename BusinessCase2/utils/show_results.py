@@ -1,6 +1,62 @@
 """
-show_results.py
+Result visualisation and model selection for the KYC investment classification
+pipeline.
 
+Theory
+------
+Model comparison is performed using the Wilcoxon signed-rank test, a
+non-parametric paired statistical test used to evaluate whether two sets of
+matched observations come from the same distribution. In this context, the
+observations correspond to per-fold cross-validation F1 scores obtained from
+identical outer folds.
+
+Unlike the paired t-test, the Wilcoxon test does not assume normality of the
+pairwise differences, making it appropriate for the low-sample regime
+(10-fold cross-validation), where Gaussian assumptions cannot be reliably
+validated.
+
+The test statistic W is defined as the sum of signed ranks of the differences.
+Under the null hypothesis of symmetry around zero, W follows a known
+distribution. However, with only 10 folds, the statistical power is limited.
+Therefore, failure to reject the null hypothesis (p > 0.05) should be
+interpreted as "insufficient evidence of a difference" rather than equivalence
+between models.
+
+When multiple models satisfy MiFID II constraints and are statistically
+indistinguishable, model selection follows Occam’s razor, prioritising the
+simplest model according to a predefined complexity ordering.
+
+MiFID II compliance is evaluated using a threshold optimised on a validation
+set rather than the default 0.5 decision cutoff. This ensures that reported
+compliance reflects realistic deployment conditions and avoids optimistic bias.
+
+Implementation
+--------------
+This module provides functionality for model evaluation, reporting, and
+selection:
+
+Console reporting
+- _print_full_story: generates a structured, human-readable summary including
+  data splits, feature sets, scaling strategy, cross-validation metrics,
+  threshold-based MiFID II compliance, ablation comparisons, and propensity
+  segmentation.
+
+Plots
+- Precision-recall curve
+- Confusion matrix
+- Cross-validation F1 distribution (boxplot)
+- Ablation comparison bar chart
+- Propensity score distribution histogram
+- SHAP summary plot (when available)
+
+Model wrappers
+- show_* functions: retrain (if required) and display full evaluation pipeline
+  for a given model
+
+Model selection
+- show_winner: performs pairwise Wilcoxon signed-rank tests among the top-3
+  MiFID II compliant models for each target. When statistical differences are
+  not significant, Occam’s razor is applied as a deterministic tie-breaker.
 """
 
 import importlib
@@ -51,7 +107,19 @@ _MODEL_MAP = {
 }
 
 
-def _separator(title="", width=64):
+def _separator(title: str = "", width: int = 64) -> None:
+    """
+    Print a decorated section separator line of the given width.
+
+    When ``title`` is provided, it is centred between padding characters.
+
+    Parameters
+    ----------
+    title : str
+        Optional label to embed in the separator.
+    width : int
+        Total line width.
+    """
     if title:
         pad = (width - len(title) - 2) // 2
         print(f"\n{'='*pad} {title} {'='*pad}")
@@ -59,15 +127,36 @@ def _separator(title="", width=64):
         print("=" * width)
 
 
-def _step(msg):   print(f"\n  ▸ {msg}")
-def _result(msg): print(f"    → {msg}")
-def _fmt(mean, std): return f"{mean:.3f} ± {std:.3f}"
+def _step(msg: str) -> None:
+    """Print a pipeline step marker prefixed with a right-arrow symbol."""
+    print(f"\n  ▸ {msg}")
+
+
+def _result(msg: str) -> None:
+    """Print an indented result line prefixed with an arrow."""
+    print(f"    → {msg}")
+
+
+def _fmt(mean: float, std: float) -> str:
+    """Format a mean ± std pair as a fixed-precision string."""
+    return f"{mean:.3f} ± {std:.3f}"
 
 
 def _effective_precision(result: dict) -> float:
     """
-    C6 fix: return precision at the optimised threshold where available.
-    Falls back to precision at 0.5 only when threshold selection was not possible.
+    Return the precision at the optimised threshold where available.
+
+    Falls back to precision at the default 0.5 threshold only when threshold
+    selection was not possible for the model.
+
+    Parameters
+    ----------
+    result : dict
+        Standardised result dict from :func:`make_result_dict`.
+
+    Returns
+    -------
+    float
     """
     thr_m = result.get("threshold_metrics")
     if thr_m is not None:
@@ -76,6 +165,18 @@ def _effective_precision(result: dict) -> float:
 
 
 def _print_full_story(result: dict) -> None:
+    """
+    Print a comprehensive human-readable summary of a single model result dict.
+
+    Covers: data split, feature set, scaling, hyperparameters, calibration
+    Brier scores, CV metrics table, MiFID II threshold compliance, feature-set
+    ablation comparison, and propensity segment counts on the test set.
+
+    Parameters
+    ----------
+    result : dict
+        Standardised result dict from :func:`make_result_dict`.
+    """
     model_name  = result["model_name"]
     target_name = result["target_name"]
     cv_sum      = result["cv_metrics_summary"]
@@ -114,8 +215,10 @@ def _print_full_story(result: dict) -> None:
         _step("Calibration: isotonic regression (cv=5)")
         if brier_pre is not None:
             pct = (brier_pre - brier_post) / brier_pre * 100
-            _result(f"Brier: {brier_pre:.4f} → {brier_post:.4f}  "
-                    f"[no-skill: {no_skill:.4f}]  Δ={pct:.1f}%")
+            _result(
+                f"Brier: {brier_pre:.4f} → {brier_post:.4f}  "
+                f"[no-skill: {no_skill:.4f}]  Δ={pct:.1f}%"
+            )
         else:
             _result(f"Brier: {brier_post:.4f}  [no-skill: {no_skill:.4f}]")
 
@@ -135,16 +238,20 @@ def _print_full_story(result: dict) -> None:
         eff_p = thr_m["precision"]
         mifid = "✓" if eff_p >= PRECISION_FLOOR else "✗"
         print(f"\n  MiFID II — threshold selected on VALIDATION set (unbiased):")
-        print(f"  Threshold = {thr_m['threshold']:.3f}  |  "
-              f"P={thr_m['precision']:.3f}  R={thr_m['recall']:.3f}  F1={thr_m['f1']:.3f}  "
-              f"MiFID {mifid}")
+        print(
+            f"  Threshold = {thr_m['threshold']:.3f}  |  "
+            f"P={thr_m['precision']:.3f}  R={thr_m['recall']:.3f}  F1={thr_m['f1']:.3f}  "
+            f"MiFID {mifid}"
+        )
     else:
         eff_p = test_m["precision"]
         mifid = "✓" if eff_p >= PRECISION_FLOOR else "✗"
-        print(f"\n  MiFID II — precision at 0.5 threshold (no threshold optimisation): "
-              f"{eff_p:.3f}  {mifid}")
+        print(
+            f"\n  MiFID II — precision at 0.5 threshold (no threshold optimisation): "
+            f"{eff_p:.3f}  {mifid}"
+        )
 
-    # Ablation — N7 fix: symmetric ±0.002 threshold
+    # Ablation — symmetric ±0.002 threshold
     if ablation:
         eng  = ablation.get("engineered", {})
         base = ablation.get("baseline", {})
@@ -152,7 +259,7 @@ def _print_full_story(result: dict) -> None:
             eng_f1  = eng["cv_metrics_summary"]["f1"]
             base_f1 = base["cv_metrics_summary"]["f1"]
             delta   = eng_f1["mean"] - base_f1["mean"]
-            # N7 fix: symmetric thresholds
+            # symmetric thresholds
             if delta > 0.002:
                 winner = "F_E"
             elif delta < -0.002:
@@ -169,18 +276,22 @@ def _print_full_story(result: dict) -> None:
         seg = segment_by_confidence(y_proba)
         n   = len(y_proba)
         print(f"\n  Propensity (test set, n={n}):")
-        print(f"    mean={y_proba.mean():.3f}  std={y_proba.std():.3f}  "
-              f"[{y_proba.min():.3f}, {y_proba.max():.3f}]")
+        print(
+            f"    mean={y_proba.mean():.3f}  std={y_proba.std():.3f}  "
+            f"[{y_proba.min():.3f}, {y_proba.max():.3f}]"
+        )
         print(f"    High (>{CONFIDENCE_HIGH:.2f}): {seg['high']['count']:4d} ({seg['high']['count']/n*100:.1f}%)  → automate")
         print(f"    Uncertain:          {seg['unsure']['count']:4d} ({seg['unsure']['count']/n*100:.1f}%)  → human")
         print(f"    Low (<{CONFIDENCE_LOW:.2f}):  {seg['low']['count']:4d} ({seg['low']['count']/n*100:.1f}%)  → no action")
 
-    # M5 note: SHAP–calibration mismatch
+    # SHAP–calibration mismatch
     if result.get("shap_values") is not None:
-        print(f"\n  NOTE (M5): SHAP values computed on uncalibrated XGBoost (TreeExplainer "
-              f"requires tree structure, unavailable in CalibratedClassifierCV wrapper). "
-              f"Propensity scores use the calibrated model. SHAP explains the pre-calibration "
-              f"log-odds mapping, not the final output probabilities.")
+        print(
+            f"\n  NOTE: SHAP values computed on uncalibrated XGBoost (TreeExplainer "
+            f"requires tree structure, unavailable in CalibratedClassifierCV wrapper). "
+            f"Propensity scores use the calibrated model. SHAP explains the pre-calibration "
+            f"log-odds mapping, not the final output probabilities."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +300,17 @@ def _print_full_story(result: dict) -> None:
 
 
 def _plot_pr_curve(result: dict) -> None:
+    """
+    Plot the precision-recall curve for a result dict.
+
+    Overlays the MiFID II precision floor (red dashed line) and, when
+    available, the validation-selected threshold point.
+
+    Parameters
+    ----------
+    result : dict
+        Standardised result dict from :func:`make_result_dict`.
+    """
     y_true  = result.get("y_test_true")
     y_proba = result.get("y_test_proba")
     thr_m   = result.get("threshold_metrics")
@@ -203,45 +325,90 @@ def _plot_pr_curve(result: dict) -> None:
     if thr_m:
         ax.scatter(thr_m["recall"], thr_m["precision"], s=80, zorder=5, color="red",
                    label=f"Val-selected thr={thr_m['threshold']:.3f} (unbiased)")
-    ax.set_xlabel("Recall"); ax.set_ylabel("Precision")
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
     ax.set_title(f"PR curve — {result['model_name']}  |  {result['target_name']}")
-    ax.legend(); ax.grid(alpha=0.3)
-    plt.tight_layout(); plt.show()
+    ax.legend()
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
 
 
 def _plot_confusion_matrix(result: dict) -> None:
-    y_true = result.get("y_test_true"); y_pred = result.get("y_test_pred")
-    if y_true is None or y_pred is None: return
+    """
+    Plot a confusion matrix heatmap for a result dict.
+
+    Uses sklearn's ``ConfusionMatrixDisplay`` with a blue colour map.
+
+    Parameters
+    ----------
+    result : dict
+        Standardised result dict from :func:`make_result_dict`.
+    """
+    y_true = result.get("y_test_true")
+    y_pred = result.get("y_test_pred")
+    if y_true is None or y_pred is None:
+        return
     cm = confusion_matrix(y_true, y_pred)
     fig, ax = plt.subplots(figsize=(4, 4))
     ConfusionMatrixDisplay(cm, display_labels=["No", "Yes"]).plot(ax=ax, colorbar=False, cmap="Blues")
     ax.set_title(f"Confusion matrix — {result['model_name']}  |  {result['target_name']}")
-    plt.tight_layout(); plt.show()
+    plt.tight_layout()
+    plt.show()
 
 
 def _plot_cv_f1_boxplot(results_by_target: dict) -> None:
+    """
+    Plot a side-by-side boxplot of per-fold CV F1 scores for each target.
+
+    Parameters
+    ----------
+    results_by_target : dict
+        Mapping of target name → result dict.
+    """
     n = len(results_by_target)
-    if n == 0: return
-    fig, axes = plt.subplots(1, n, figsize=(5*n, 4))
-    if n == 1: axes = [axes]
+    if n == 0:
+        return
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4))
+    if n == 1:
+        axes = [axes]
     for ax, (target, result) in zip(axes, results_by_target.items()):
-        if result is None: continue
+        if result is None:
+            continue
         f1_folds = result["cv_metrics_raw"]["f1"]
         ax.boxplot(f1_folds, widths=0.5)
         ax.axhline(np.mean(f1_folds), color="red", linestyle="--", lw=1,
                    label=f"mean={np.mean(f1_folds):.3f}")
-        ax.set_title(target); ax.set_ylabel("F1 (per fold)")
-        ax.set_xticks([1]); ax.set_xticklabels([result["model_name"]], fontsize=8)
-        ax.legend(fontsize=8); ax.grid(axis="y", alpha=0.3)
+        ax.set_title(target)
+        ax.set_ylabel("F1 (per fold)")
+        ax.set_xticks([1])
+        ax.set_xticklabels([result["model_name"]], fontsize=8)
+        ax.legend(fontsize=8)
+        ax.grid(axis="y", alpha=0.3)
     fig.suptitle("CV F1 distribution (10 folds)", fontsize=11)
-    plt.tight_layout(); plt.show()
+    plt.tight_layout()
+    plt.show()
 
 
 def _plot_ablation_bar(result: dict) -> None:
+    """
+    Plot a bar chart comparing mean CV F1 for F_E and F_B feature sets.
+
+    Error bars show one standard deviation.  The higher-performing feature set
+    is coloured blue; the lower is coloured orange.
+
+    Parameters
+    ----------
+    result : dict
+        Standardised result dict from :func:`make_result_dict`.
+    """
     ablation = result.get("ablation")
-    if not ablation: return
-    eng = ablation.get("engineered"); base = ablation.get("baseline")
-    if not eng or not base: return
+    if not ablation:
+        return
+    eng  = ablation.get("engineered")
+    base = ablation.get("baseline")
+    if not eng or not base:
+        return
     means  = [eng["cv_metrics_summary"]["f1"]["mean"],  base["cv_metrics_summary"]["f1"]["mean"]]
     stds   = [eng["cv_metrics_summary"]["f1"]["std"],   base["cv_metrics_summary"]["f1"]["std"]]
     colors = ["#4C72B0" if means[0] >= means[1] else "#DD8452",
@@ -252,36 +419,79 @@ def _plot_ablation_bar(result: dict) -> None:
     ax.set_title(f"Ablation — {result['model_name']}  |  {result['target_name']}")
     ax.set_ylim(max(0, min(means) - 0.05), min(1, max(means) + 0.08))
     for bar, mean in zip(bars, means):
-        ax.text(bar.get_x() + bar.get_width()/2, mean + stds[0] + 0.01,
+        ax.text(bar.get_x() + bar.get_width() / 2, mean + stds[0] + 0.01,
                 f"{mean:.3f}", ha="center", fontsize=10)
-    ax.grid(axis="y", alpha=0.3); plt.tight_layout(); plt.show()
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.show()
 
 
 def _plot_propensity_histogram(result: dict) -> None:
+    """
+    Plot a histogram of predicted probabilities on the test set.
+
+    Vertical dashed lines mark the high and low confidence thresholds used to
+    segment clients for the recommendation engine.
+
+    Parameters
+    ----------
+    result : dict
+        Standardised result dict from :func:`make_result_dict`.
+    """
     y_proba = result.get("y_test_proba")
-    if y_proba is None: return
+    if y_proba is None:
+        return
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.hist(y_proba, bins=30, edgecolor="white", color="#4C72B0", alpha=0.8)
     ax.axvline(CONFIDENCE_HIGH, color="green",  linestyle="--", lw=1.5,
                label=f"Automate (>{CONFIDENCE_HIGH:.2f})")
     ax.axvline(CONFIDENCE_LOW,  color="orange", linestyle="--", lw=1.5,
                label=f"Low (<{CONFIDENCE_LOW:.2f})")
-    ax.set_xlabel("Propensity"); ax.set_ylabel("Count")
+    ax.set_xlabel("Propensity")
+    ax.set_ylabel("Count")
     ax.set_title(f"Propensity — {result['model_name']}  |  {result['target_name']}")
-    ax.legend(); ax.grid(alpha=0.3); plt.tight_layout(); plt.show()
+    ax.legend()
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
 
 
 def _plot_shap(result: dict) -> None:
+    """
+    Render a SHAP summary plot for a result dict, if SHAP data is present.
+
+    Silently returns if shap is not installed or if the result dict does not
+    contain pre-computed SHAP values.
+
+    Parameters
+    ----------
+    result : dict
+        Standardised result dict from :func:`make_result_dict`.
+    """
     try:
         import shap
     except ImportError:
         return
-    shap_values = result.get("shap_values"); shap_test_X = result.get("shap_test_X")
-    if shap_values is None or shap_test_X is None: return
+    shap_values = result.get("shap_values")
+    shap_test_X = result.get("shap_test_X")
+    if shap_values is None or shap_test_X is None:
+        return
     shap.summary_plot(shap_values, shap_test_X, show=True)
 
 
 def _show_all_plots(result: dict) -> None:
+    """
+    Render all available plots for a single result dict.
+
+    Calls in order: PR curve, confusion matrix, propensity histogram,
+    ablation bar chart, SHAP summary.  Individual plots are skipped silently
+    when the required data is absent.
+
+    Parameters
+    ----------
+    result : dict
+        Standardised result dict from :func:`make_result_dict`.
+    """
     _plot_pr_curve(result)
     _plot_confusion_matrix(result)
     _plot_propensity_histogram(result)
@@ -295,6 +505,25 @@ def _show_all_plots(result: dict) -> None:
 
 
 def _run_and_load(key: str, retrain: bool) -> dict:
+    """
+    Optionally retrain a model, then load and return its result dicts.
+
+    Handles the special ``classifier_chain`` result structure which stores
+    both targets in a single pickle under the key ``_chain``.
+
+    Parameters
+    ----------
+    key : str
+        Model key from ``_MODEL_MAP``.
+    retrain : bool
+        When True, calls the model module's ``main()`` before loading.
+
+    Returns
+    -------
+    dict
+        Mapping of target name → result dict, or ``{'_chain': ...}`` for the
+        classifier chain model.
+    """
     module_path, folder = _MODEL_MAP[key]
     if retrain:
         mod = importlib.import_module(module_path)
@@ -318,6 +547,19 @@ def _run_and_load(key: str, retrain: bool) -> dict:
 
 
 def _show_model(key: str, retrain: bool = True) -> None:
+    """
+    Orchestrate retrain, result loading, console reporting, and plot rendering.
+
+    Handles both standard per-target result dicts and the special classifier
+    chain result structure.
+
+    Parameters
+    ----------
+    key : str
+        Model key from ``_MODEL_MAP``.
+    retrain : bool
+        When True, calls the model module's ``main()`` before displaying.
+    """
     data = _run_and_load(key, retrain)
 
     if "_chain" in data:
@@ -351,37 +593,70 @@ def _show_model(key: str, retrain: bool = True) -> None:
         _plot_cv_f1_boxplot(data)
 
 
-def show_xgboost(retrain=True):       _show_model("xgboost",          retrain)
-def show_logistic_reg(retrain=True):  _show_model("logistic_reg",      retrain)
-def show_naive_bayes(retrain=True):   _show_model("naive_bayes",       retrain)
-def show_random_forest(retrain=True): _show_model("random_forest",     retrain)
-def show_mlp(retrain=True):           _show_model("mlp",               retrain)
-def show_classifier_chain(retrain=True): _show_model("classifier_chain", retrain)
-def show_soft_voting(retrain=True):   _show_model("soft_voting",       retrain)
-def show_hard_voting(retrain=True):   _show_model("hard_voting",       retrain)
-def show_all(retrain=True):
+def show_xgboost(retrain: bool = True) -> None:
+    """Train (if retrain=True) and display results for the XGBoost model."""
+    _show_model("xgboost", retrain)
+
+
+def show_logistic_reg(retrain: bool = True) -> None:
+    """Train (if retrain=True) and display results for the Logistic Regression model."""
+    _show_model("logistic_reg", retrain)
+
+
+def show_naive_bayes(retrain: bool = True) -> None:
+    """Train (if retrain=True) and display results for the Gaussian Naive Bayes model."""
+    _show_model("naive_bayes", retrain)
+
+
+def show_random_forest(retrain: bool = True) -> None:
+    """Train (if retrain=True) and display results for the Random Forest model."""
+    _show_model("random_forest", retrain)
+
+
+def show_mlp(retrain: bool = True) -> None:
+    """Train (if retrain=True) and display results for the MLP model."""
+    _show_model("mlp", retrain)
+
+
+def show_classifier_chain(retrain: bool = True) -> None:
+    """Train (if retrain=True) and display results for the Classifier Chain model."""
+    _show_model("classifier_chain", retrain)
+
+
+def show_soft_voting(retrain: bool = True) -> None:
+    """Train (if retrain=True) and display results for the Soft Voting Ensemble."""
+    _show_model("soft_voting", retrain)
+
+
+def show_hard_voting(retrain: bool = True) -> None:
+    """Train (if retrain=True) and display results for the Hard Voting Ensemble."""
+    _show_model("hard_voting", retrain)
+
+
+def show_all(retrain: bool = True) -> None:
+    """Run show_* for every model in _MODEL_MAP in registration order."""
     for key in _MODEL_MAP:
         _show_model(key, retrain)
 
 
 def show_winner() -> None:
     """
-    Formal model selection per target.
+    Perform formal model selection per target via Wilcoxon signed-rank tests.
 
-    C6 fix: MiFID compliance gate uses precision at the OPTIMISED threshold
-    (threshold_metrics["precision"]) where available, not at 0.5.
+    MiFID II compliance gate uses precision at the OPTIMISED threshold
+    (``threshold_metrics["precision"]``) where available, not at 0.5.
 
-    M2 note: With 10 folds, Wilcoxon has very low power for small differences.
+    With 10 folds, Wilcoxon has very low power for small differences.
     Results should be read as 'cannot distinguish' rather than 'equivalent'.
 
-    M3 fix: All pairwise Wilcoxon tests among top-3 compliant models,
-    not just top-2.
+    All pairwise Wilcoxon tests among top-3 compliant models are run,
+    not just the top-2 pair.
     """
     _separator("MODEL SELECTION — WILCOXON SIGNED-RANK TESTS", width=64)
     print("\n  IMPORTANT NOTES:")
-    print("  • MiFID II compliance tested at OPTIMISED threshold (C6 fix), not at 0.5")
+    print("  • MiFID II compliance tested at OPTIMISED threshold, not at 0.5")
     print("  • Wilcoxon with 10 folds has low power — 'p>0.05' means 'cannot distinguish'")
-    print("  • All pairs among top-3 compliant models are tested (M3 fix)\n")
+    print("  • All pairs among top-3 compliant models are tested\n")
 
     folders = {
         "XGBoost":      "xgboost_shap",
@@ -400,7 +675,7 @@ def show_winner() -> None:
             try:
                 r = load_result(folder, target)
                 f1_folds = r["cv_metrics_raw"]["f1"]
-                # C6 fix: use effective precision at optimised threshold
+                # use effective precision at optimised threshold
                 eff_prec = _effective_precision(r)
                 results[name] = {
                     "f1_folds":          f1_folds,
@@ -415,7 +690,8 @@ def show_winner() -> None:
                 logger.warning("  Skipping %s — no pickle", name)
 
         if not results:
-            print("  No results found."); continue
+            print("  No results found.")
+            continue
 
         passing = {k: v for k, v in results.items() if v["passes_constraint"]}
         failing = {k: v for k, v in results.items() if not v["passes_constraint"]}
@@ -425,8 +701,10 @@ def show_winner() -> None:
         for name, r in sorted(results.items(), key=lambda x: -x[1]["cv_f1_mean"]):
             ok     = "✓" if r["passes_constraint"] else "✗"
             thr_f1 = f"{r['thr_f1']:.3f}" if r["thr_f1"] is not None else "  N/A"
-            print(f"  {name:<20} {_fmt(r['cv_f1_mean'], r['cv_f1_std']):>16}  "
-                  f"{r['eff_precision']:>10.3f}  {r['test_f1']:>8.3f}  {thr_f1:>8}  {ok:>6}")
+            print(
+                f"  {name:<20} {_fmt(r['cv_f1_mean'], r['cv_f1_std']):>16}  "
+                f"{r['eff_precision']:>10.3f}  {r['test_f1']:>8.3f}  {thr_f1:>8}  {ok:>6}"
+            )
 
         if failing:
             print(f"\n  ✗ Excluded: {', '.join(failing.keys())}")
@@ -434,16 +712,19 @@ def show_winner() -> None:
         candidates = passing if passing else results
         ranked = sorted(candidates.items(), key=lambda x: -x[1]["cv_f1_mean"])
 
-        # M3 fix: all pairs among top-3
+        # all pairs among top-3
         top3 = ranked[:3]
-        complexity = {"NaiveBayes": 1, "LR": 2, "XGBoost": 3, "RandomForest": 3,
-                      "MLP": 4, "SoftVoting": 5, "HardVoting": 5}
+        complexity = {
+            "NaiveBayes": 1, "LR": 2, "XGBoost": 3, "RandomForest": 3,
+            "MLP": 4, "SoftVoting": 5, "HardVoting": 5,
+        }
 
-        print(f"\n  Pairwise Wilcoxon tests (top-{min(3,len(top3))}):")
+        print(f"\n  Pairwise Wilcoxon tests (top-{min(3, len(top3))}):")
         all_equivalent = True
         for i in range(len(top3)):
             for j in range(i + 1, len(top3)):
-                n_a, d_a = top3[i]; n_b, d_b = top3[j]
+                n_a, d_a = top3[i]
+                n_b, d_b = top3[j]
                 try:
                     stat, p_val = wilcoxon(d_a["f1_folds"], d_b["f1_folds"])
                     sig = "not significant" if p_val > 0.05 else "SIGNIFICANT"
