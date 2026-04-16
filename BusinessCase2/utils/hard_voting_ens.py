@@ -1,8 +1,31 @@
 """
 Hard Voting Ensemble Classifier for Investment Propensity Prediction.
 
-... (docstring unchanged) ...
+Theory
+------
+Hard voting (majority voting) assigns the class predicted by the majority of
+member classifiers, ignoring individual probability estimates. This approach
+is robust to poorly calibrated probabilities because the final decision depends
+only on the predicted labels. However, it sacrifices the variance-reduction
+benefits of probability averaging available in soft voting. For binary
+classification with three classifiers, at least two must agree to determine
+the final prediction. Under class imbalance, hard voting may bias predictions
+toward the majority class due to the absence of threshold adjustment.
+
+This ensemble combines Logistic Regression (LR), Extreme Gradient Boosting
+(XGB), and Support Vector Machines (SVM), enabling a controlled comparison
+with its soft-voting counterpart to isolate the impact of vote aggregation.
+
+Implementation
+--------------
+This script trains a `VotingClassifier` with `voting="hard"` on two feature
+sets: engineered features (F_E) and baseline features (F_B) for ablation
+analysis. Logistic Regression and SVM hyperparameters are tuned using
+cross-validation. XGBoost is calibrated to enable probability-based metrics
+such as the Brier score and MiFID II threshold optimization. Results are
+serialized to `data/pickled_files/hard_voting_ens/`.
 """
+
 
 from __future__ import annotations
 
