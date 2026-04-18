@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "gower>=0.1.2",
+    "ipykernel>=7.2.0",
     "kmedoids>=0.5.4",
     "marimo>=0.20.4",
     "matplotlib>=3.10.8",
@@ -19,5 +20,8 @@ dependencies = [
     "scikit-learn-extra>=0.3.0",
     "scipy>=1.17.1",
     "seaborn>=0.13.2",
+    "shap>=0.51.0",
+    "sklvq>=0.1.2",
     "umap-learn>=0.5.11",
+    "xgboost>=3.2.0",
 ]

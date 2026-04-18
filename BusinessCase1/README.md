@@ -23,6 +23,8 @@ The pipeline segments 5,000 retail bank clients (18 features: continuous financi
 
 **UMAP validation.** A 15-dimensional UMAP embedding is clustered independently (sil=0.431, k=10, stability ARI=0.891) and compared against the distance-space solution. Distance-space methods agree strongly with each other (ARI=0.824); UMAP finds different structure (ARI≈0.21), so the two approaches are treated as complementary views rather than converging evidence.
 
+**Economic Valuation.** To assign tangible financial margins to behavioral segments, financial variables are projected into a non-leaking Customer Economic Score (CES) via PCA, providing objective high-value thresholds. Robust, leakage-free logistic classifiers map structural product propensities, calculating exact expected net € revenues by substituting global AUM assumptions with localized empirical cluster means.
+
 
 
 ## Notebook Structure
@@ -33,6 +35,7 @@ The pipeline segments 5,000 retail bank clients (18 features: continuous financi
 | `clustering_weighted.ipynb` | Alpha sweep and optimal metric selection |
 | `clustering_umap.ipynb` | UMAP embedding, clustering, and stability testing |
 | `comparison.ipynb` | ARI matrix and co-assignment analysis across all three methods |
+| `economic_value_v2.ipynb` | Maps cluster variances into physical Euros via PCA scoring (CES), empirical AUM margins, and leakage-free propensities. |
 
 ## Setup
 
