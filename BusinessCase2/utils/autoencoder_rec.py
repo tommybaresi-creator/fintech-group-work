@@ -166,6 +166,7 @@ def train_autoencoder(
     InteractionAutoencoder
         Best model state restored from the epoch with lowest validation loss.
     """
+    torch.manual_seed(random_state)
     rng = np.random.default_rng(random_state)
     n = R.shape[0]
     n_val = max(batch_size, int(np.floor(val_frac * n)))
