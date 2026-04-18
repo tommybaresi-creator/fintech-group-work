@@ -15,3 +15,5 @@ __pycache__/
 .virtual_documents/
 
 .claude/
+
+materials/
