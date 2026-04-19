@@ -140,8 +140,12 @@ def evaluate_confidence_approach(results, type_mask, df, prod_risks, prod_ids):
                 prod_id, prod_risk = personalized_match(
                     risk_target, client_risk, prod_risks, prod_ids, mask
                 )
+                suitability = max(0.0, 1.0 - abs(prod_risk - risk_target))
+                priority = prob * suitability
             else:
                 prod_id, prod_risk = 0, 0.0
+                suitability = 0.0
+                priority = 0.0
 
             confidence_rows.append({
                 'ClientIdx':       idx,
@@ -152,6 +156,10 @@ def evaluate_confidence_approach(results, type_mask, df, prod_risks, prod_ids):
                 'ConfidenceTier':  tier,
                 'RecommendedProd': prod_id,
                 'ProductRisk':     prod_risk,
+                'Suitability':     suitability,
+                'PriorityScore':   priority,
                 'Matched':         prod_id > 0,
             })
-    return pd.DataFrame(confidence_rows)
+            
+    df_res = pd.DataFrame(confidence_rows)
+    return df_res.sort_values(by=['Target', 'PriorityScore'], ascending=[True, False]).reset_index(drop=True)
