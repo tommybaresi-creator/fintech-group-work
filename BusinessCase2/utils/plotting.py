@@ -192,3 +192,74 @@ plt.savefig("figures/shap_beeswarm.pdf", bbox_inches="tight", dpi=150)
 plt.savefig("figures/shap_beeswarm.png", bbox_inches="tight", dpi=150)
 plt.show()
 print("Saved -> figures/shap_beeswarm.pdf / .png")
+
+
+# ===========================================================================
+# Figure 4 — Propensity Score Distribution with Tier Boundaries
+# ===========================================================================
+
+TIER_LOW  = 0.40
+TIER_HIGH = 0.75
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=False)
+
+for ax, (target, r) in zip(axes, results.items()):
+    y_proba = r["y_test_proba"]
+    color   = COLORS[target]
+
+    n_low    = (y_proba < TIER_LOW).sum()
+    n_medium = ((y_proba >= TIER_LOW) & (y_proba < TIER_HIGH)).sum()
+    n_high   = (y_proba >= TIER_HIGH).sum()
+    n_total  = len(y_proba)
+
+    # Shaded tier regions first
+    ax.axvspan(0,         TIER_LOW,  alpha=0.10, color="#e74c3c", zorder=0)
+    ax.axvspan(TIER_LOW,  TIER_HIGH, alpha=0.10, color="#f39c12", zorder=0)
+    ax.axvspan(TIER_HIGH, 1.0,       alpha=0.10, color="#2ecc71", zorder=0)
+
+    # Log-scale histogram
+    ax.hist(y_proba, bins=30, color=color, alpha=0.85, edgecolor="white", lw=0.5, zorder=2)
+    ax.set_yscale("log")
+
+    # Boundary lines
+    ax.axvline(TIER_LOW,  color="#e67e22", lw=2, ls="--", zorder=3)
+    ax.axvline(TIER_HIGH, color="#27ae60", lw=2, ls="--", zorder=3)
+
+    # Threshold value labels — placed in axes-fraction coords so they sit
+    # just below the top of the plot regardless of y scale
+    trans_xdata_yaxes = ax.get_xaxis_transform()
+    ax.text(TIER_LOW  + 0.01, 0.97, "0.40", transform=trans_xdata_yaxes,
+            color="#e67e22", fontsize=9, fontweight="bold", va="top", ha="left")
+    ax.text(TIER_HIGH + 0.01, 0.97, "0.75", transform=trans_xdata_yaxes,
+            color="#27ae60", fontsize=9, fontweight="bold", va="top", ha="left")
+
+    # Tier annotation boxes — use axes-fraction y so they never clash with bars.
+    # Place each box at 0.88 axes height, horizontally centred in its region.
+    tier_specs = [
+        (TIER_LOW / 2,               n_low,    "No action",  "#c0392b", "#fadbd8"),
+        ((TIER_LOW + TIER_HIGH) / 2, n_medium, "Review",     "#d35400", "#fdebd0"),
+        ((TIER_HIGH + 1.0) / 2,      n_high,   "Automate",   "#1e8449", "#d5f5e3"),
+    ]
+    for x_mid, n, label, fg, bg in tier_specs:
+        ax.text(x_mid, 0.88,
+                f"{label}\n{n}  ({n/n_total:.0%})",
+                transform=trans_xdata_yaxes,
+                ha="center", va="top", fontsize=9, fontweight="bold",
+                color=fg, zorder=5,
+                bbox=dict(boxstyle="round,pad=0.35", fc=bg, ec=fg, lw=1.2, alpha=0.92))
+
+    ax.set_xlabel("Predicted propensity score $\hat{p}$", fontsize=11)
+    ax.set_ylabel("Clients — log scale  (test set, $n=1{,}000$)", fontsize=10)
+    ax.set_xlim(0, 1)
+    ax.set_title(f"{target_label(target)}Investment — Propensity Score Distribution",
+                 fontsize=12, pad=8)
+    ax.grid(axis="y", alpha=0.3, zorder=1, which="both")
+    ax.spines[["top", "right"]].set_visible(False)
+
+fig.suptitle("Propensity Score Distribution and Confidence Tier Segmentation",
+             fontsize=13, fontweight="bold", y=1.01)
+plt.tight_layout()
+plt.savefig("figures/propensity_distribution.pdf", bbox_inches="tight", dpi=150)
+plt.savefig("figures/propensity_distribution.png", bbox_inches="tight", dpi=150)
+plt.show()
+print("Saved -> figures/propensity_distribution.pdf / .png")
