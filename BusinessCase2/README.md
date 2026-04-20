@@ -154,7 +154,7 @@ lifecycle_trajectory.ipynb      ← longitudinal product trajectories by client 
 
 ## Pickle Format
 
-Every `utils/*.py` script saves results to `data/pickled_files/<model>/` as a `joblib` dict:
+Every `utils/*.py` script saves results to `data/pickled_files/<model>/` as a `pickle` dict:
 
 ```python
 {
