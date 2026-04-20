@@ -61,8 +61,12 @@ BusinessCase2/
 │       ├── soft_voting_ens/
 │       └── hard_voting_ens/
 │
-├── utils/                          ← one self-contained script per model
-│   ├── preprocessing.py            ← shared foundation (F_E, F_B, splits, CV, calibration)
+├── utils/                          ← shared modules
+│   ├── preprocessing.py            ← feature engineering, splits, CV, calibration
+│   ├── next_best_action.py         ← baseline / personalized / confidence approaches
+│   ├── products.py                 ← product catalogue & interaction matrix
+│   ├── svd_rec.py                  ← truncated SVD collaborative filter
+│   ├── autoencoder_rec.py          ← denoising autoencoder collaborative filter
 │   ├── linear_reg.py
 │   ├── naive_bayes.py
 │   ├── rand_forest.py
@@ -72,14 +76,12 @@ BusinessCase2/
 │   ├── soft_voting_ens.py
 │   └── hard_voting_ens.py
 │
-├── file_sanity.ipynb               ← data quality gate (run first)
+├── EDA.ipynb                       ← exploratory data analysis
 ├── bestmodel_income.ipynb          ← model comparison for IncomeInvestment
 ├── bestmodel_accumulation.ipynb    ← model comparison for AccumulationInvestment
-├── recommendation_system.ipynb     ← recommendation system (run after the models)
-├── rec_sys.ipynb                   ← recommendation engine
-├── svd.ipynb                       ← SVD collaborative filter
-├── data_assumptions.ipynb          ← statistical assumption tests
-├── EstimatingNeedsPoliMI.ipynb     ← EDA (reference, unchanged)
+├── recommendation_system.ipynb     ← NBA layer: baseline / personalized / confidence-based
+├── rec_sys_svd_autoencoder.ipynb   ← collaborative filtering: SVD & denoising autoencoder
+├── lifecycle_trajectory.ipynb      ← longitudinal view: product transitions across age
 │
 ├── pyproject.toml
 └── README.md
@@ -91,7 +93,7 @@ BusinessCase2/
 
 ```mermaid
 flowchart TD
-    A[("Dataset2_Needs.xls\n5 000 clients")] --> B[file_sanity.ipynb\nData quality gate]
+    A[("Dataset2_Needs.xls\n5 000 clients")] --> B[EDA.ipynb]
     B --> C{Feature Engineering}
 
     C -->|"F_E — 10 features\ninteraction terms"| D1[linear_reg.py\nStdScaler · L1]
@@ -109,9 +111,9 @@ flowchart TD
     E --> F2[bestmodel_accumulation.ipynb]
 
     F1 & F2 --> G{Model Selection\nWilcoxon · Ablation · Calibration}
-    G --> H[rec_sys.ipynb\nPropensity scoring\nProduct matching\nPriority ranking]
-    E --> I[svd.ipynb\nCollaborative filter]
-    I --> H
+    G --> H[recommendation_system.ipynb\nBaseline · Personalized · Confidence-based]
+    G --> I[rec_sys_svd_autoencoder.ipynb\nSVD · Denoising Autoencoder]
+    H --> J[lifecycle_trajectory.ipynb\nPseudo-panel · Persona clustering\nProduct transition ages]
 ```
 
 ---
@@ -130,12 +132,15 @@ uv sync          # installs all dependencies from pyproject.toml
 Open the notebooks in this order:
 
 ```text
-bestmodel_income.ipynb          ← IncomeInvestment model selection
-bestmodel_accumulation.ipynb    ← AccumulationInvestment model selection
-recommendation_system.ipynb     ← Personalized recommendation system
+EDA.ipynb                       ← exploratory data analysis (optional, no outputs consumed downstream)
+bestmodel_income.ipynb          ← IncomeInvestment model selection → populates pickled_files/
+bestmodel_accumulation.ipynb    ← AccumulationInvestment model selection → populates pickled_files/
+recommendation_system.ipynb     ← NBA layer (Baseline / Personalized / Confidence-based)
+rec_sys_svd_autoencoder.ipynb   ← collaborative filtering (SVD + denoising autoencoder)
+lifecycle_trajectory.ipynb      ← longitudinal product trajectories by client persona
 ```
 
-Each notebook loads all pickled results and produces:
+`bestmodel_*.ipynb` produce per-target:
 - Summary metrics table (accuracy / precision / recall / F1)
 - CV stability boxplots (10-fold F1 distributions)
 - Wilcoxon signed-rank p-value matrix
