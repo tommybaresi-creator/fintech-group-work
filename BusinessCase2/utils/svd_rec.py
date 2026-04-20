@@ -62,6 +62,45 @@ from sklearn.metrics import roc_auc_score
 
 from utils.products import ACCUMULATION, INCOME
 
+
+# ---------------------------------------------------------------------------
+# Visualisation
+# ---------------------------------------------------------------------------
+
+
+def plot_svd_embeddings(
+    U: np.ndarray,
+    clients_df: pd.DataFrame,
+    propensity_col: str = 'p_hat_income',
+    figsize: tuple = (7, 5),
+) -> None:
+    """
+    Scatter plot of client embeddings in the first two SVD latent dimensions.
+
+    Parameters
+    ----------
+    U : np.ndarray
+        Client embedding matrix (n_clients, k), output of fit_svd().
+    clients_df : pd.DataFrame
+        Must contain the column named by propensity_col.
+    propensity_col : str
+        Column used to colour the scatter points (default 'p_hat_income').
+    figsize : tuple
+        Figure size passed to plt.subplots().
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    scatter = ax.scatter(
+        U[:, 0], U[:, 1],
+        c=clients_df[propensity_col],
+        cmap='RdYlGn', s=3, alpha=0.5,
+    )
+    plt.colorbar(scatter, ax=ax, label=propensity_col)
+    ax.set_xlabel('Latent dimension 1')
+    ax.set_ylabel('Latent dimension 2')
+    ax.set_title(f'Client embeddings (U) — coloured by {propensity_col}')
+    plt.tight_layout()
+    plt.show()
+
 # ---------------------------------------------------------------------------
 # Rank selection
 # ---------------------------------------------------------------------------
