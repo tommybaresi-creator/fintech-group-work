@@ -26,6 +26,7 @@ try:
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
+
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
@@ -38,6 +39,7 @@ OUTPUTS_DIR = Path("outputs")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _ensure_dirs() -> None:
     PICKLE_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -49,33 +51,52 @@ def _save_fig(stem: str) -> None:
     logger.info("Figure saved → %s", path)
 
 
-def _compute_var(
-    returns: np.ndarray,
+def _compute_var_historical(
+    weights: np.ndarray,
+    factor_returns: np.ndarray,
     confidence: float = 0.99,
     horizon_weeks: int = 4,
 ) -> float:
     """
-    Parametric (normal) VaR scaled to a multi-week horizon.
+    Historical-simulation VaR for the current portfolio weights.
+
+    Projects the current weight vector onto the last ``var_lookback``
+    weeks of factor returns to generate a scenario P&L distribution,
+    then reads off the empirical percentile.  This is forward-looking
+    (uses current weights, not past realised replica returns) and
+    makes no distributional assumption, avoiding the normal-tail
+    underestimation of the parametric approach.
+
+    Square-root-of-time scaling extrapolates from the weekly scenario
+    distribution to the 1-month horizon required by UCITS.
 
     Parameters
     ----------
-    returns : np.ndarray
-        Recent weekly returns (e.g. last 52 observations).
+    weights : np.ndarray
+        Current portfolio weight vector, shape ``(n_futures,)``.
+    factor_returns : np.ndarray
+        Recent weekly futures return matrix, shape
+        ``(var_lookback, n_futures)``.  Typically the last 52 weeks.
     confidence : float
-        Confidence level (e.g. 0.99 for 99 %).
+        VaR confidence level (default 0.99 for 99 %).
     horizon_weeks : int
-        Horizon in weeks (4 ≈ 1 month).
+        Horizon in weeks (default 4 ≈ 1 month).
 
     Returns
     -------
     float
-        VaR as a positive number.
+        VaR as a positive number (potential loss fraction of NAV).
     """
-    mu = np.mean(returns)
-    sigma = np.std(returns, ddof=1)
-    z = stats.norm.ppf(1.0 - confidence)
-    var = -(mu * horizon_weeks + sigma * np.sqrt(horizon_weeks) * z)
-    return float(max(var, 0.0))
+    # Apply current weights to each historical scenario → scenario P&Ls
+    scenario_pnl = factor_returns @ weights  # shape (var_lookback,)
+
+    # Empirical 1st percentile (no normality assumption)
+    weekly_var = -np.percentile(scenario_pnl, (1.0 - confidence) * 100)
+
+    # Scale weekly → monthly via square-root-of-time
+    monthly_var = weekly_var * np.sqrt(horizon_weeks)
+
+    return float(max(monthly_var, 0.0))
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -171,6 +192,7 @@ class WeightGenerator(_BaseModule):  # type: ignore[misc]
 
 # ── Data preparation ──────────────────────────────────────────────────────────
 
+
 def _make_sequences(X: np.ndarray, window: int) -> np.ndarray:
     """
     Build sliding-window sequences from a 2-D array.
@@ -187,10 +209,11 @@ def _make_sequences(X: np.ndarray, window: int) -> np.ndarray:
     np.ndarray
         Shape ``(T - window, window, n_features)``.
     """
-    return np.stack([X[i - window:i] for i in range(window, len(X))])
+    return np.stack([X[i - window : i] for i in range(window, len(X))])
 
 
 # ── Loss ──────────────────────────────────────────────────────────────────────
+
 
 def _portfolio_loss(
     weights: "torch.Tensor",
@@ -224,6 +247,7 @@ def _portfolio_loss(
 
 
 # ── Training ──────────────────────────────────────────────────────────────────
+
 
 def train_nn(
     X_train: np.ndarray,
@@ -280,15 +304,15 @@ def train_nn(
     if not TORCH_AVAILABLE:
         raise ImportError("PyTorch is required: pip install torch")
 
-    window     = config["window"]
-    n_futures  = X_train.shape[1]
-    device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    window = config["window"]
+    n_futures = X_train.shape[1]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
     # Build sequences
-    Xs_tr = _make_sequences(X_train, window)   # (T-W, W, F)
+    Xs_tr = _make_sequences(X_train, window)  # (T-W, W, F)
     ys_tr = y_train[window:]
-    fs_tr = X_train[window:]                    # factor returns at prediction step
+    fs_tr = X_train[window:]  # factor returns at prediction step
 
     Xs_vl = _make_sequences(X_val, window)
     ys_vl = y_val[window:]
@@ -298,7 +322,7 @@ def train_nn(
         return torch.FloatTensor(a).to(device)
 
     dataset = TensorDataset(_t(Xs_tr), _t(ys_tr), _t(fs_tr))
-    loader  = DataLoader(
+    loader = DataLoader(
         dataset,
         batch_size=config.get("batch_size", 32),
         shuffle=True,
@@ -320,10 +344,10 @@ def train_nn(
         optimizer, patience=10, factor=0.5
     )
 
-    l1_pen     = config.get("l1_penalty", 0.0)
-    patience   = config.get("patience", 30)
-    epochs     = config.get("epochs", 300)
-    best_val   = float("inf")
+    l1_pen = config.get("l1_penalty", 0.0)
+    patience = config.get("patience", 30)
+    epochs = config.get("epochs", 300)
+    best_val = float("inf")
     best_state: Optional[Dict] = None
     no_improve = 0
     train_hist, val_hist = [], []
@@ -344,9 +368,7 @@ def train_nn(
         # ── Validation step ──────────────────────────────────────────────────
         model.eval()
         with torch.no_grad():
-            val_loss = _portfolio_loss(
-                model(Xv_t), yv_t, fv_t, l1_pen
-            ).item()
+            val_loss = _portfolio_loss(model(Xv_t), yv_t, fv_t, l1_pen).item()
 
         scheduler.step(val_loss)
         train_hist.append(epoch_loss)
@@ -354,7 +376,7 @@ def train_nn(
 
         # ── Early stopping ───────────────────────────────────────────────────
         if val_loss < best_val - 1e-8:
-            best_val   = val_loss
+            best_val = val_loss
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             no_improve = 0
         else:
@@ -363,7 +385,12 @@ def train_nn(
         if epoch % 25 == 0 or epoch == 1:
             logger.info(
                 "Epoch %4d/%d | train=%.6f | val=%.6f | patience %d/%d",
-                epoch, epochs, epoch_loss, val_loss, no_improve, patience,
+                epoch,
+                epochs,
+                epoch_loss,
+                val_loss,
+                no_improve,
+                patience,
             )
 
         if no_improve >= patience:
@@ -378,6 +405,7 @@ def train_nn(
 
 
 # ── Inference ─────────────────────────────────────────────────────────────────
+
 
 def evaluate_nn(
     model: "WeightGenerator",
@@ -433,29 +461,38 @@ def evaluate_nn(
     device = next(model.parameters()).device
     model.eval()
 
-    dates        = y.index.to_numpy()
+    dates = y.index.to_numpy()
     replica_list: List[float] = []
-    target_list:  List[float] = []
+    target_list: List[float] = []
     weights_list: List[np.ndarray] = []
-    gross_exp:    List[float] = []
-    var_vals:     List[float] = []
-    scale_facts:  List[float] = []
+    gross_exp: List[float] = []
+    var_vals: List[float] = []
+    scale_facts: List[float] = []
 
     with torch.no_grad():
         for t in range(window, len(X)):
-            x_win = X[t - window: t]                              # (W, F)
+            x_win = X[t - window : t]  # (W, F)
             x_ten = torch.FloatTensor(x_win).unsqueeze(0).to(device)  # (1, W, F)
-            w     = model(x_ten).squeeze(0).cpu().numpy()         # (F,)
+            w = model(x_ten).squeeze(0).cpu().numpy()  # (F,)
 
-            # VaR scaling
+            # ── Historical-simulation VaR (forward-looking) ───────────────────
+            # Use current weights projected onto the last var_lookback weeks of
+            # FACTOR returns — not past replica returns.  This gives the VaR
+            # implied by the current allocation, not by historical performance.
             scale = 1.0
-            if len(replica_list) >= var_lookback:
-                recent = np.array(replica_list[-var_lookback:])
-                var    = _compute_var(recent, confidence=0.99, horizon_weeks=4)
+            if t >= var_lookback:
+                factor_window = X[t - var_lookback : t]  # (var_lookback, n_futures)
+                var = _compute_var_historical(
+                    w,
+                    factor_window,
+                    confidence=0.99,
+                    horizon_weeks=4,
+                )
                 if var > max_var_threshold:
                     scale = max_var_threshold / var
-                    w     = w * scale
-                    var   = var * scale         # recompute after scaling
+                    w = w * scale
+                    # VaR scales linearly with weights under HS
+                    var = var * scale
             else:
                 var = float("nan")
 
@@ -465,7 +502,7 @@ def evaluate_nn(
             weights_list.append(w.copy())
 
             replica_ret = float(np.dot(X[t], w))
-            target_ret  = float(y.iloc[t])
+            target_ret = float(y.iloc[t])
             replica_list.append(replica_ret)
             target_list.append(target_ret)
 
@@ -474,15 +511,16 @@ def evaluate_nn(
 
     return {
         "replica_returns": pd.Series(replica_list, index=out_dates, name="Replica"),
-        "target_returns":  pd.Series(target_list,  index=out_dates, name="Target"),
+        "target_returns": pd.Series(target_list, index=out_dates, name="Target"),
         "weights_history": weights_df,
-        "gross_exposures": pd.Series(gross_exp,   index=out_dates, name="gross_exposure"),
-        "var_values":      pd.Series(var_vals,    index=out_dates, name="var"),
+        "gross_exposures": pd.Series(gross_exp, index=out_dates, name="gross_exposure"),
+        "var_values": pd.Series(var_vals, index=out_dates, name="var"),
         "scaling_factors": pd.Series(scale_facts, index=out_dates, name="scale"),
     }
 
 
 # ── Plots ─────────────────────────────────────────────────────────────────────
+
 
 def _plot_training_curves(
     train_losses: List[float],
@@ -492,7 +530,7 @@ def _plot_training_curves(
 ) -> None:
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(train_losses, label="Train", linewidth=1.5)
-    ax.plot(val_losses,   label="Val",   linewidth=1.5)
+    ax.plot(val_losses, label="Val", linewidth=1.5)
     ax.set_title(f"Training Curves — {label}", fontsize=13)
     ax.set_xlabel("Epoch")
     ax.set_ylabel("MSE Loss")
@@ -537,8 +575,12 @@ def _plot_gross_var(
 
     ax = axes[0]
     ax.plot(dates, result["gross_exposures"], color="purple", linewidth=1.3)
-    ax.axhline(1.0, color="gray", linestyle="--", linewidth=0.8, label="100% (no leverage)")
-    ax.axhline(2.0, color="red",  linestyle="--", linewidth=0.8, label="200% (UCITS limit)")
+    ax.axhline(
+        1.0, color="gray", linestyle="--", linewidth=0.8, label="100% (no leverage)"
+    )
+    ax.axhline(
+        2.0, color="red", linestyle="--", linewidth=0.8, label="200% (UCITS limit)"
+    )
     ax.set_title(f"Gross Exposure Over Time — {label}", fontsize=12)
     ax.set_ylabel("Gross Exposure")
     ax.legend(fontsize=9)
@@ -548,8 +590,11 @@ def _plot_gross_var(
     var_clean = pd.Series(result["var_values"], index=dates).dropna()
     ax.plot(var_clean, color="orange", linewidth=1.3)
     ax.axhline(
-        max_var_threshold, color="red", linestyle="--",
-        linewidth=1.0, label=f"VaR limit ({max_var_threshold:.0%})",
+        max_var_threshold,
+        color="red",
+        linestyle="--",
+        linewidth=1.0,
+        label=f"VaR limit ({max_var_threshold:.0%})",
     )
     ax.set_title(f"1M VaR(99%) Over Time — {label}", fontsize=12)
     ax.set_ylabel("VaR")
@@ -563,33 +608,227 @@ def _plot_gross_var(
     plt.close(fig)
 
 
+def plot_overfitting_analysis(
+    all_results: List[Dict],
+    save_stem: str = "nn_overfitting_analysis",
+) -> None:
+    """
+    Comprehensive overfitting analysis across all NN configurations.
+
+    Generates a four-panel figure:
+
+    1. **Train vs Val loss gap** — final epoch train and val MSE for each
+       config, side by side.  A large train > val gap signals capacity
+       overfitting; val < train throughout signals regime shift.
+    2. **Weight volatility (std over time)** — mean across assets of the
+       per-asset weight standard deviation over the test period.  Higher
+       = more unstable weights = stronger overfitting signal.
+    3. **Gross exposure stability** — time series of gross exposure for
+       each config.  Erratic exposure signals the model is chasing noise.
+    4. **Loss convergence curves** — all configs on one axes so the
+       convergence speed and train/val gap shapes can be compared
+       directly.
+
+    Parameters
+    ----------
+    all_results : list of dict
+        Each dict must contain ``model_name``, ``train_losses``,
+        ``val_losses``, ``weights_history`` (pd.DataFrame), and
+        ``gross_exposures``.
+    save_stem : str
+        Output filename stem (no extension).
+    """
+    sns.set_theme(style="whitegrid")
+    n = len(all_results)
+    names = [r["model_name"] for r in all_results]
+    pal = plt.cm.tab10(np.linspace(0, 0.9, n))
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 11))
+    fig.suptitle("Overfitting Analysis — All NN Configurations", fontsize=14)
+
+    # ── Panel 1: final train vs val loss ─────────────────────────────────────
+    ax = axes[0, 0]
+    x = np.arange(n)
+    w = 0.35
+    final_train = [r["train_losses"][-1] for r in all_results]
+    final_val = [r["val_losses"][-1] for r in all_results]
+    ax.bar(
+        x - w / 2, final_train, w, label="Train (final)", color=pal[:, :3], alpha=0.85
+    )
+    ax.bar(
+        x + w / 2,
+        final_val,
+        w,
+        label="Val (final)",
+        color=pal[:, :3],
+        alpha=0.50,
+        edgecolor="black",
+        linewidth=0.8,
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [nm.split("_")[0] + "\n" + "_".join(nm.split("_")[1:3]) for nm in names],
+        fontsize=8,
+    )
+    ax.set_title("Final Train vs Validation MSE Loss", fontsize=11)
+    ax.set_ylabel("MSE Loss")
+    ax.legend(fontsize=9)
+    ax.grid(axis="y", alpha=0.3)
+
+    # ── Panel 2: weight instability (mean per-asset weight std) ──────────────
+    ax = axes[0, 1]
+    weight_stds = []
+    for r in all_results:
+        wh = r["weights_history"]
+        # mean std across all assets → scalar instability measure
+        weight_stds.append(float(wh.std(axis=0).mean()))
+    bars = ax.bar(np.arange(n), weight_stds, color=pal[:, :3], alpha=0.85)
+    ax.set_xticks(np.arange(n))
+    ax.set_xticklabels(
+        [nm.split("_")[0] + "\n" + "_".join(nm.split("_")[1:3]) for nm in names],
+        fontsize=8,
+    )
+    ax.set_title(
+        "Weight Instability\n(mean per-asset weight std, test period)", fontsize=11
+    )
+    ax.set_ylabel("Mean weight std")
+    ax.grid(axis="y", alpha=0.3)
+    # Annotate values
+    for bar, val in zip(bars, weight_stds):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + max(weight_stds) * 0.01,
+            f"{val:.4f}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    # ── Panel 3: gross exposure time series ──────────────────────────────────
+    ax = axes[1, 0]
+    for r, color in zip(all_results, pal):
+        ge = r["gross_exposures"]
+        if isinstance(ge, pd.Series):
+            ax.plot(
+                ge,
+                label=r["model_name"].split("_")[0]
+                + "_"
+                + "_".join(r["model_name"].split("_")[1:3]),
+                color=color,
+                linewidth=1.2,
+                alpha=0.85,
+            )
+    ax.axhline(1.0, color="gray", linestyle="--", linewidth=0.8, label="100%")
+    ax.axhline(2.0, color="red", linestyle="--", linewidth=0.8, label="200% UCITS")
+    ax.set_title("Gross Exposure Over Time", fontsize=11)
+    ax.set_ylabel("Gross exposure (Σ|w|)")
+    ax.set_xlabel("Date")
+    ax.legend(fontsize=8, ncol=2)
+    ax.grid(alpha=0.3)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    plt.setp(ax.get_xticklabels(), rotation=30)
+
+    # ── Panel 4: convergence curves — all configs ─────────────────────────────
+    ax = axes[1, 1]
+    for r, color in zip(all_results, pal):
+        label = (
+            r["model_name"].split("_")[0]
+            + "_"
+            + "_".join(r["model_name"].split("_")[1:3])
+        )
+        ax.plot(
+            r["train_losses"],
+            color=color,
+            linewidth=1.5,
+            linestyle="-",
+            label=f"{label} train",
+        )
+        ax.plot(
+            r["val_losses"],
+            color=color,
+            linewidth=1.5,
+            linestyle="--",
+            alpha=0.7,
+            label=f"{label} val",
+        )
+    ax.set_title(
+        "Loss Convergence — All Configs\n(solid=train, dashed=val)", fontsize=11
+    )
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("MSE Loss")
+    ax.legend(fontsize=7, ncol=2)
+    ax.grid(alpha=0.3)
+
+    plt.tight_layout()
+    _save_fig(save_stem)
+    plt.close(fig)
+    logger.info("Overfitting analysis saved → outputs/%s.png", save_stem)
+
+
 # ── Default configurations ────────────────────────────────────────────────────
 
 DEFAULT_CONFIGS: List[Dict] = [
     # MLP — short window, no L1
-    dict(mode="mlp",  window=26, hidden_dims=[64, 32],      dropout=0.2, lr=1e-3,
-         epochs=300,  batch_size=32, l1_penalty=0.0,        patience=30),
+    dict(
+        mode="mlp",
+        window=26,
+        hidden_dims=[64, 32],
+        dropout=0.2,
+        lr=1e-3,
+        epochs=300,
+        batch_size=32,
+        l1_penalty=0.0,
+        patience=30,
+    ),
     # MLP — long window, light L1
-    dict(mode="mlp",  window=52, hidden_dims=[64, 32],      dropout=0.2, lr=1e-3,
-         epochs=300,  batch_size=32, l1_penalty=1e-3,       patience=30),
+    dict(
+        mode="mlp",
+        window=52,
+        hidden_dims=[64, 32],
+        dropout=0.2,
+        lr=1e-3,
+        epochs=300,
+        batch_size=32,
+        l1_penalty=1e-3,
+        patience=30,
+    ),
     # MLP — deep, short window, L1
-    dict(mode="mlp",  window=26, hidden_dims=[128, 64, 32], dropout=0.3, lr=5e-4,
-         epochs=300,  batch_size=32, l1_penalty=1e-3,       patience=30),
+    dict(
+        mode="mlp",
+        window=26,
+        hidden_dims=[128, 64, 32],
+        dropout=0.3,
+        lr=5e-4,
+        epochs=300,
+        batch_size=32,
+        l1_penalty=1e-3,
+        patience=30,
+    ),
     # LSTM — long window
-    dict(mode="lstm", window=52, hidden_dims=[64],          dropout=0.2, lr=1e-3,
-         epochs=300,  batch_size=32, l1_penalty=0.0,        patience=30),
+    dict(
+        mode="lstm",
+        window=52,
+        hidden_dims=[64],
+        dropout=0.2,
+        lr=1e-3,
+        epochs=300,
+        batch_size=32,
+        l1_penalty=0.0,
+        patience=30,
+    ),
 ]
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
+
 def run_nn(
     X: pd.DataFrame,
     y: pd.Series,
     configs: Optional[List[Dict]] = None,
-    train_frac:         float = 0.60,
-    val_frac:           float = 0.15,
-    max_var_threshold:  float = 0.20,
+    train_frac: float = 0.60,
+    val_frac: float = 0.15,
+    max_var_threshold: float = 0.20,
 ) -> Dict:
     """
     Full NN experiment: train each config, evaluate on test set, compare.
@@ -654,28 +893,31 @@ def run_nn(
 
     # ── Align and convert ────────────────────────────────────────────────────
     common = X.index.intersection(y.index)
-    X_df   = X.loc[common]
-    y_s    = y.loc[common]
-    feat   = X_df.columns.tolist()
-    T      = len(X_df)
+    X_df = X.loc[common]
+    y_s = y.loc[common]
+    feat = X_df.columns.tolist()
+    T = len(X_df)
 
-    X_arr  = X_df.values.astype(np.float32)
-    y_arr  = y_s.values.astype(np.float32)
+    X_arr = X_df.values.astype(np.float32)
+    y_arr = y_s.values.astype(np.float32)
 
     # ── Split indices ────────────────────────────────────────────────────────
     t_train = int(T * train_frac)
-    t_val   = int(T * (train_frac + val_frac))
+    t_val = int(T * (train_frac + val_frac))
     logger.info(
         "Data split: train=%d | val=%d | test=%d (total=%d)",
-        t_train, t_val - t_train, T - t_val, T,
+        t_train,
+        t_val - t_train,
+        T - t_val,
+        T,
     )
 
-    X_tr, y_tr = X_arr[:t_train],        y_arr[:t_train]
-    X_vl, y_vl = X_arr[t_train:t_val],   y_arr[t_train:t_val]
-    test_start  = y_s.index[t_val]
+    X_tr, y_tr = X_arr[:t_train], y_arr[:t_train]
+    X_vl, y_vl = X_arr[t_train:t_val], y_arr[t_train:t_val]
+    test_start = y_s.index[t_val]
 
     sns.set_theme(style="whitegrid")
-    all_results: List[Dict]  = []
+    all_results: List[Dict] = []
     metrics_rows: List[Dict] = []
 
     for i, cfg in enumerate(configs):
@@ -693,37 +935,39 @@ def run_nn(
 
             # Training curves
             _plot_training_curves(
-                tr_hist, vl_hist, label,
+                tr_hist,
+                vl_hist,
+                label,
                 stem=f"nn_cfg{i+1:02d}_training_curves",
             )
 
             # Full walk-forward inference
-            res = evaluate_nn(
-                model, X_arr, y_s, cfg, feat, max_var_threshold
-            )
+            res = evaluate_nn(model, X_arr, y_s, cfg, feat, max_var_threshold)
 
             # Restrict to test period for fair comparison
             res["replica_returns"] = res["replica_returns"].loc[test_start:]
-            res["target_returns"]  = res["target_returns"].loc[test_start:]
+            res["target_returns"] = res["target_returns"].loc[test_start:]
             res["weights_history"] = res["weights_history"].loc[test_start:]
             res["gross_exposures"] = res["gross_exposures"].loc[test_start:]
-            res["var_values"]      = res["var_values"].loc[test_start:]
+            res["var_values"] = res["var_values"].loc[test_start:]
             res["scaling_factors"] = res["scaling_factors"].loc[test_start:]
-            res["config"]       = cfg
-            res["model_name"]   = label
-            res["model"]        = model
+            res["config"] = cfg
+            res["model_name"] = label
+            res["model"] = model
             res["train_losses"] = tr_hist
-            res["val_losses"]   = vl_hist
+            res["val_losses"] = vl_hist
 
             all_results.append(res)
 
             # Weights and risk plots
             _plot_weights(
-                res["weights_history"], label,
+                res["weights_history"],
+                label,
                 stem=f"nn_cfg{i+1:02d}_weights",
             )
             _plot_gross_var(
-                res, label,
+                res,
+                label,
                 stem=f"nn_cfg{i+1:02d}_gross_var",
                 max_var_threshold=max_var_threshold,
             )
@@ -757,8 +1001,8 @@ def run_nn(
         metrics_df = metrics_df.set_index("model")
 
     # ── Best config by information ratio ────────────────────────────────────
-    best_idx    = metrics_df["information_ratio"].idxmax()
-    best_pos    = list(metrics_df.index).index(best_idx)
+    best_idx = metrics_df["information_ratio"].idxmax()
+    best_pos = list(metrics_df.index).index(best_idx)
     best_result = all_results[best_pos]
     best_config = configs[best_pos]
 
@@ -771,12 +1015,16 @@ def run_nn(
         metrics_df.loc[best_idx, "correlation"],
     )
 
+    # ── Overfitting analysis across all configs ──────────────────────────────
+    logger.info("Generating overfitting analysis …")
+    plot_overfitting_analysis(all_results, save_stem="nn_overfitting_analysis")
+
     # ── Save pickle ──────────────────────────────────────────────────────────
     payload = {
-        "best_result":   best_result,
-        "all_results":   all_results,
-        "metrics_df":    metrics_df,
-        "best_config":   best_config,
+        "best_result": best_result,
+        "all_results": all_results,
+        "metrics_df": metrics_df,
+        "best_config": best_config,
         "feature_names": feat,
     }
     pkl_path = PICKLE_DIR / "nn_results.pkl"
@@ -793,8 +1041,10 @@ def run_nn(
 
 if __name__ == "__main__":
     import sys
+
     sys.path.insert(0, ".")
     from utils import setup_logging
+
     setup_logging()
 
     pkl_data = Path("data/picklefiles/data_loader.pkl")

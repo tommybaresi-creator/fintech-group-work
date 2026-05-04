@@ -628,6 +628,94 @@ def run_evaluation(
     return metrics_df
 
 
+def run_evaluation_with_costs(
+    results: Dict[str, Dict],
+    cost_bps: float = 5.0,
+    save_prefix: str = "eval",
+) -> pd.DataFrame:
+    """
+    Evaluation pipeline that appends net-of-cost metrics alongside gross.
+
+    Runs the full :func:`run_evaluation` pipeline, then adds net-of-cost
+    columns (``net_ann_ret``, ``net_sharpe``, ``net_tracking_error``,
+    ``net_information_ratio``) for models that supply ``weights_history``.
+
+    Parameters
+    ----------
+    results : dict
+        Same format as :func:`run_evaluation`.  Models that include
+        ``weights_history`` receive net-of-cost columns; others get NaN.
+    cost_bps : float
+        One-way transaction cost in basis points. Default 5.
+    save_prefix : str
+        Filename prefix for all saved figures.
+
+    Returns
+    -------
+    pd.DataFrame
+        Combined gross + net metrics table.
+    """
+    try:
+        from utils.transaction_costs import apply_transaction_costs
+    except ImportError:
+        from transaction_costs import apply_transaction_costs
+
+    # Run standard gross evaluation first
+    metrics = run_evaluation(results, save_prefix=save_prefix)
+
+    # Append net columns
+    net_rows: Dict[str, Dict] = {}
+    for name, res in results.items():
+        if "weights_history" not in res:
+            logger.warning("'%s' has no weights_history — net metrics = NaN", name)
+            net_rows[name] = {
+                "net_ann_ret": float("nan"),
+                "net_sharpe": float("nan"),
+                "net_te": float("nan"),
+                "net_ir": float("nan"),
+            }
+            continue
+
+        net = apply_transaction_costs(
+            res["replica_returns"], res["weights_history"], cost_bps=cost_bps
+        )
+        tgt = res["target_returns"]
+        common = net.index.intersection(tgt.index)
+        net, tgt_a = net.loc[common], tgt.loc[common]
+
+        active = net - tgt_a
+        vol = float(net.std(ddof=1) * np.sqrt(ANNUAL_FACTOR))
+        ann_r = float(net.mean() * ANNUAL_FACTOR)
+        te = float(active.std(ddof=1) * np.sqrt(ANNUAL_FACTOR))
+        ir = (float(active.mean() * ANNUAL_FACTOR) / te) if te > 0 else float("nan")
+
+        net_rows[name] = {
+            "net_ann_ret": ann_r,
+            "net_sharpe": (ann_r / vol) if vol > 0 else float("nan"),
+            "net_te": te,
+            "net_ir": ir,
+        }
+        logger.info(
+            "%-30s | net IR=%.4f | net TE=%.4f | cost=%.0f bps",
+            name,
+            ir,
+            te,
+            cost_bps,
+        )
+
+    net_df = pd.DataFrame(net_rows).T
+    net_df.index.name = "model"
+    combined = metrics.join(net_df)
+
+    # Save updated pickle
+    pkl_path = PICKLE_DIR / "evaluation_with_costs.pkl"
+    with open(pkl_path, "wb") as fh:
+        pickle.dump({"metrics": combined, "results": results, "cost_bps": cost_bps}, fh)
+    logger.info("Pickle saved → %s", pkl_path)
+
+    return combined
+
+
 # ── Standalone execution ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":

@@ -30,10 +30,12 @@ def setup_logging(level: int = logging.INFO) -> None:
 from utils.data_loader import run_data_loader
 from utils.evaluation import run_evaluation
 from utils.run_nn import run_nn
+from utils.transaction_costs import run_transaction_cost_analysis
 
 __all__ = [
     "setup_logging",
     "run_data_loader",
     "run_evaluation",
     "run_nn",
+    "run_transaction_cost_analysis",
 ]
