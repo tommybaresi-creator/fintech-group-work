@@ -716,6 +716,46 @@ def run_evaluation_with_costs(
     return combined
 
 
+def compute_regime_metrics(
+    results: Dict[str, Dict],
+    regime_splits: Optional[Dict] = None,
+) -> pd.DataFrame:
+    """
+    Compute core metrics separately for each market regime.
+
+    Default splits:
+        pre_covid:  test start → 2020-02-21
+        post_covid: 2020-02-24 → test end
+
+    Returns a MultiIndex DataFrame: (model, regime) × metrics.
+    """
+    if regime_splits is None:
+        regime_splits = {
+            "pre_covid":  ("1900-01-01", "2020-02-21"),
+            "post_covid": ("2020-02-24", "2099-12-31"),
+        }
+
+    rows = []
+    for name, res in results.items():
+        rep = res["replica_returns"]
+        tgt = res["target_returns"]
+
+        for regime, (start, end) in regime_splits.items():
+            r = rep.loc[start:end]
+            t = tgt.loc[start:end]
+
+            if len(r) < 10:
+                continue
+
+            m = compute_metrics(r, t, model_name=name)
+            m["regime"] = regime
+            rows.append(m)
+
+    df = pd.DataFrame(rows)
+    df = df.set_index(["model", "regime"])
+    return df
+
+
 # ── Standalone execution ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":

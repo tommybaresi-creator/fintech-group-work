@@ -44,6 +44,8 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
+from utils.risk import scale_to_var_limit
+
 logger = logging.getLogger(__name__)
 
 ANNUAL_FACTOR: int = 52
@@ -122,6 +124,10 @@ def run_rolling(
 
         # Actual portfolio weights: β / σ_X
         actual_w = model.coef_ / scaler.scale_
+
+        if j >= window + 52:
+            factor_window = X_arr[j - 52 : j]      # (52, n_features) — scenario returns
+            actual_w, _, _ = scale_to_var_limit(actual_w, factor_window)
 
         # Gross replica return: X_raw[j] @ w  (exact, no mean-offset approximation)
         pred_gross = float(X_arr[j] @ actual_w)
