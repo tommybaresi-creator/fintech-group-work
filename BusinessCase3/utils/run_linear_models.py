@@ -176,6 +176,80 @@ def _plot_active_returns(
     plt.close(fig)
 
 
+def _plot_var_scaling(
+    results: Dict[str, Dict],
+    save_prefix: str,
+) -> None:
+    """
+    Three-panel diagnostic for VaR (backward vs forward) and weight scaling.
+
+    Top panel    — backward-looking VaR (realised replica returns).
+    Middle panel — forward-looking VaR (current weights × past factor returns).
+    Bottom panel — scale factor applied at each step (1.0 = no rescaling).
+
+    Same colour per model across all panels; both VaR panels share the
+    20 % UCITS limit reference line so the two approaches can be compared
+    directly.
+    """
+    palette = plt.cm.tab10(np.linspace(0, 0.9, len(results)))
+    fig, axes = plt.subplots(3, 1, figsize=(14, 13), sharex=True)
+
+    # ── Top: backward-looking VaR ─────────────────────────────────────────────
+    ax = axes[0]
+    for (name, res), color in zip(results.items(), palette):
+        var_bw = res.get("var_backward_history", pd.Series(dtype=float)).dropna()
+        if var_bw.empty:
+            continue
+        ax.plot(var_bw, label=name, color=color, linewidth=1.4)
+    ax.axhline(0.20, color="red", linestyle="--", linewidth=1.2, label="20% UCITS limit")
+    ax.set_title("Backward-looking VaR (realised replica returns)", fontsize=12)
+    ax.set_ylabel("VaR")
+    ax.legend(fontsize=9, ncol=3)
+    ax.grid(alpha=0.3)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+
+    # ── Middle: forward-looking VaR ───────────────────────────────────────────
+    ax = axes[1]
+    for (name, res), color in zip(results.items(), palette):
+        var_fw = res.get("var_forward_history", pd.Series(dtype=float)).dropna()
+        if var_fw.empty:
+            continue
+        ax.plot(var_fw, label=name, color=color, linewidth=1.4)
+    ax.axhline(0.20, color="red", linestyle="--", linewidth=1.2, label="20% UCITS limit")
+    ax.set_title("Forward-looking VaR (current weights × past factor returns)", fontsize=12)
+    ax.set_ylabel("VaR")
+    ax.legend(fontsize=9, ncol=3)
+    ax.grid(alpha=0.3)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+
+    # ── Bottom: scale factor ──────────────────────────────────────────────────
+    ax = axes[2]
+    for (name, res), color in zip(results.items(), palette):
+        scale_s = res.get("scale_history", pd.Series(dtype=float))
+        if scale_s.empty:
+            continue
+        n_breaches = int((scale_s < 1.0).sum())
+        ax.plot(
+            scale_s,
+            label=f"{name}  (breaches: {n_breaches})",
+            color=color,
+            linewidth=1.4,
+        )
+    ax.axhline(1.0, color="grey", linestyle=":", linewidth=0.9, label="no rescaling")
+    ax.set_title("Scale Factor (< 1.0 = weights cut — uses max(VaR_bw, VaR_fw))", fontsize=12)
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Scale factor")
+    ax.legend(fontsize=9, ncol=3)
+    ax.grid(alpha=0.3)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    plt.setp(ax.get_xticklabels(), rotation=30)
+
+    plt.suptitle("VaR Constraint Diagnostics — Backward vs Forward-looking", fontsize=14, y=1.01)
+    plt.tight_layout()
+    _save_fig(f"{save_prefix}_var_scaling")
+    plt.close(fig)
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def run_linear_models(
@@ -275,13 +349,23 @@ def run_linear_models(
         window,
     )
 
-    # ── Fit scaler on training data ONLY ────────────────────────────────────
+    # ── Fit scalers on training data ONLY ────────────────────────────────────
     scaler = StandardScaler()
     scaler.fit(X_train.values)
     logger.info("Scaler fit on %d training observations", n_train)
 
+    # scaler_Y: standardises the target for regularised models (Ridge, LASSO,
+    # ElasticNet) so that the penalty α is on a dimensionless scale.
+    # OLS and WOLS use raw Y (scaler_Y is not passed to run_rolling for them).
+    scaler_Y = StandardScaler()
+    scaler_Y.fit(y_train.values.reshape(-1, 1))
+
     X_train_sc = scaler.transform(X_train.values)
     X_train_raw = X_train.values
+    y_train_sc = pd.Series(
+        scaler_Y.transform(y_train.values.reshape(-1, 1)).ravel(),
+        index=y_train.index,
+    )
 
     # ── Hyperparameter selection (training data only) ────────────────────────
     logger.info("-" * 50)
@@ -289,16 +373,18 @@ def run_linear_models(
     alphas: Dict[str, Any] = {}
 
     if "Ridge" in models_to_run:
-        alphas["Ridge"] = select_alpha_ridge(X_train_sc, y_train)
+        # CV on scaled Y so selected alpha is consistent with rolling fitting
+        alphas["Ridge"] = select_alpha_ridge(X_train_sc, y_train_sc)
 
     if "LASSO" in models_to_run:
-        alphas["LASSO"] = select_alpha_lasso(X_train_sc, y_train)
+        alphas["LASSO"] = select_alpha_lasso(X_train_sc, y_train_sc)
 
     if "ElasticNet" in models_to_run:
-        alpha_en, l1_en = select_alpha_elasticnet(X_train_sc, y_train)
+        alpha_en, l1_en = select_alpha_elasticnet(X_train_sc, y_train_sc)
         alphas["ElasticNet"] = {"alpha": alpha_en, "l1_ratio": l1_en}
 
     if "WOLS" in models_to_run:
+        # WOLS uses raw Y (no Y normalisation — exponential weights, not penalty)
         alphas["WOLS"] = select_lambda_wols(
             X_train_sc, y_train, scaler.scale_, X_train_raw, window
         )
@@ -341,6 +427,10 @@ def run_linear_models(
         return fn
 
     # ── Rolling loop — full series (train + test) ─────────────────────────
+    # Penalised models receive scaler_Y so the rolling engine normalises Y
+    # inside each window before fitting.
+    # OLS and WOLS get scaler_Y=None and use raw Y as before.
+    _penalised = {"Ridge", "LASSO", "ElasticNet"}
     best_results: Dict[str, Dict] = {}
 
     for name in models_to_run:
@@ -354,6 +444,7 @@ def run_linear_models(
             window         = window,
             build_model_fn = _make_fn(name),
             feature_names  = feat,
+            scaler_Y       = scaler_Y if name in _penalised else None,
         )
         best_results[name] = res
 
@@ -361,9 +452,12 @@ def run_linear_models(
     test_start = X.index[train_mask][-1] + pd.Timedelta(days=1)
     test_results = {
         name: {
-            "replica_returns":  res["replica_returns"].loc[test_start:],
-            "target_returns":   res["target_returns"].loc[test_start:],
-            "weights_history":  res["weights_history"].loc[test_start:],
+            "replica_returns":      res["replica_returns"].loc[test_start:],
+            "target_returns":       res["target_returns"].loc[test_start:],
+            "weights_history":      res["weights_history"].loc[test_start:],
+            "var_backward_history": res["var_backward_history"].loc[test_start:],
+            "var_forward_history":  res["var_forward_history"].loc[test_start:],
+            "scale_history":        res["scale_history"].loc[test_start:],
         }
         for name, res in best_results.items()
     }
@@ -393,6 +487,7 @@ def run_linear_models(
     _plot_gross_exposure(test_results, save_prefix)
     _plot_lasso_selection(test_results, save_prefix)
     _plot_active_returns(test_results, save_prefix)
+    _plot_var_scaling(test_results, save_prefix)
 
     # ── Save pickle ───────────────────────────────────────────────────────────
     payload = {
@@ -403,6 +498,7 @@ def run_linear_models(
         "window":        window,
         "train_end_date": train_end_date,
         "scaler":        scaler,
+        "scaler_Y":      scaler_Y,
         "feature_names": feat,
     }
     pkl_path = PICKLE_DIR / "linear_results.pkl"

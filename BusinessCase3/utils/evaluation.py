@@ -178,50 +178,64 @@ def information_ratio(
     return active / te
 
 
-def compute_var(
-    returns: np.ndarray | pd.Series,
-    confidence: float = 0.99,
-    horizon_weeks: int = 4,
-    method: str = "parametric",
-) -> float:
+def calculate_var(returns, confidence=0.01, horizon=4, method='conservative'):
     """
-    Compute Value at Risk at a given confidence and time horizon.
+    Calculate Value at Risk (VaR) using non-Gaussian methods.
 
-    Parameters
-    ----------
-    returns : array-like
-        Recent weekly return observations (e.g. last 52 weeks).
-    confidence : float
-        VaR confidence level (e.g. 0.99 for 99 %).
-    horizon_weeks : int
-        Horizon in weeks (4 ≈ 1 month).
-    method : str
-        ``'parametric'`` (normal distribution) or ``'historical'``.
+    Parameters:
+    returns (array-like): Historical returns (single-period)
+    confidence (float): Confidence level (e.g., 0.01 for 1% VaR)
+    horizon (int): Time horizon in periods (weeks)
+    method (str): 'historical', 'cornish_fisher', or 'conservative' (max of both)
 
-    Returns
-    -------
-    float
-        VaR as a positive number (potential loss).
-
-    Raises
-    ------
-    ValueError
-        If ``method`` is not recognised.
+    Returns:
+    float: VaR as a positive number (loss)
     """
-    arr = np.asarray(returns, dtype=float)
-    if method == "parametric":
-        mu = arr.mean()
-        sigma = arr.std(ddof=1)
-        z = stats.norm.ppf(1.0 - confidence)
-        var = -(mu * horizon_weeks + sigma * np.sqrt(horizon_weeks) * z)
-    elif method == "historical":
-        scaled = arr * np.sqrt(horizon_weeks)
-        var = -np.percentile(scaled, (1.0 - confidence) * 100)
+    returns = np.array(returns)
+    returns = returns[~np.isnan(returns)]
+
+    if len(returns) < 10:
+        # Fallback: not enough data, use simple std-based estimate
+        sigma = np.std(returns)
+        return sigma * np.sqrt(horizon) * 2.33  # around 1% Gaussian as fallback
+
+    # --- Historical VaR ---
+    # Scale single-period returns to the desired horizon
+    # Using overlapping blocks if possible, otherwise sqrt scaling on the quantile
+    if len(returns) >= horizon:
+        # Compute rolling multi-period returns for the given horizon
+        cumulative = np.array([
+            np.prod(1 + returns[j:j+horizon]) - 1
+            for j in range(len(returns) - horizon + 1)
+        ])
+        var_historical = -np.percentile(cumulative, confidence * 100)
     else:
-        raise ValueError(
-            f"Unknown VaR method '{method}'. Use 'parametric' or 'historical'."
-        )
-    return float(max(var, 0.0))
+        # Not enough data for horizon-scaled returns, use sqrt-time scaling
+        var_historical = -np.percentile(returns, confidence * 100) * np.sqrt(horizon)
+
+    if method == 'historical':
+        return max(var_historical, 0.0)
+
+    # --- Cornish-Fisher VaR ---
+    sigma = np.std(returns)
+    s = stats.skew(returns) if len(returns) > 2 else 0.0  # skewness
+    k = stats.kurtosis(returns, fisher=True) if len(returns) > 3 else 0.0  # excess kurtosis
+
+    z = stats.norm.ppf(confidence)  # negative value for left tail
+
+    # Cornish-Fisher expansion: adjusts z for skewness and kurtosis
+    z_cf = (z
+            + (z**2 - 1) * s / 6
+            + (z**3 - 3*z) * k / 24
+            - (2*z**3 - 5*z) * s**2 / 36)
+
+    var_cf = -z_cf * sigma * np.sqrt(horizon)
+
+    if method == 'cornish_fisher':
+        return max(var_cf, 0.0)
+
+    # --- Conservative: take the maximum of both ---
+    return max(var_historical, var_cf, 0.0)
 
 
 def compute_metrics(
