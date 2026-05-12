@@ -1,2 +1,6 @@
 .claude
 .venv
+.DS_Store
+__pycache__/
+
+BusinessCase3/
