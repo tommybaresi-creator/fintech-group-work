@@ -770,6 +770,144 @@ def compute_regime_metrics(
     return df
 
 
+def plot_regime_analysis(
+    regime_df: pd.DataFrame,
+    save_prefix: str = "regime",
+) -> None:
+    """
+    Generate two regime comparison figures and save them.
+
+    Figure 1 — Four-panel bar chart: TE, IR, Correlation, Sharpe for
+    pre-COVID vs post-COVID side by side per model.
+
+    Figure 2 — Two-panel delta chart: ΔTE and ΔIR (post − pre) per model,
+    highlighting which models degrade most under regime change.
+
+    Parameters
+    ----------
+    regime_df : pd.DataFrame
+        MultiIndex (model, regime) × metrics, as returned by
+        :func:`compute_regime_metrics`.
+    save_prefix : str
+        Filename prefix for the two saved figures.
+    """
+    _ensure_dirs()
+    models = regime_df.index.get_level_values("model").unique()
+    x = np.arange(len(models))
+    width = 0.35
+
+    metrics_to_plot = [
+        ("tracking_error",    "Tracking Error (annualised)",  False),
+        ("information_ratio", "Information Ratio",             True),
+        ("correlation",       "Correlation with target",       False),
+        ("sharpe_replica",    "Sharpe Ratio",                  True),
+    ]
+
+    # ── Figure 1: pre vs post side-by-side ───────────────────────────────────
+    fig, axes = plt.subplots(2, 2, figsize=(16, 11))
+    fig.suptitle("Regime Analysis — Pre vs Post COVID", fontsize=15, fontweight="bold")
+
+    for ax, (metric, label, add_hline) in zip(axes.flatten(), metrics_to_plot):
+        pre  = regime_df.xs("pre_covid",  level="regime")[metric].reindex(models)
+        post = regime_df.xs("post_covid", level="regime")[metric].reindex(models)
+
+        ax.bar(x - width / 2, pre,  width, label="Pre-COVID",  color="steelblue", alpha=0.85)
+        ax.bar(x + width / 2, post, width, label="Post-COVID", color="coral",     alpha=0.85)
+
+        if add_hline:
+            ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+
+        ax.set_title(label, fontsize=12)
+        ax.set_xticks(x)
+        ax.set_xticklabels(models, rotation=30, ha="right", fontsize=9)
+        ax.legend(fontsize=9)
+        ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    _save_fig(f"{save_prefix}_01_pre_post")
+    plt.close(fig)
+
+    # ── Figure 2: delta (post − pre) ─────────────────────────────────────────
+    fig2, axes2 = plt.subplots(1, 2, figsize=(14, 5))
+    fig2.suptitle(
+        "Regime Shift Impact — Post minus Pre COVID", fontsize=13, fontweight="bold"
+    )
+
+    for ax, (metric, label) in zip(axes2, [
+        ("tracking_error",    "ΔTracking Error (post − pre)"),
+        ("information_ratio", "ΔInformation Ratio (post − pre)"),
+    ]):
+        pre   = regime_df.xs("pre_covid",  level="regime")[metric].reindex(models)
+        post  = regime_df.xs("post_covid", level="regime")[metric].reindex(models)
+        delta = post - pre
+
+        colors = ["seagreen" if v >= 0 else "tomato" for v in delta]
+        ax.bar(x, delta, color=colors, alpha=0.85)
+        ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+        ax.set_title(label, fontsize=11)
+        ax.set_xticks(x)
+        ax.set_xticklabels(models, rotation=30, ha="right", fontsize=9)
+        ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    _save_fig(f"{save_prefix}_02_delta")
+    plt.close(fig2)
+
+
+def run_regime_analysis(
+    results: Dict[str, Dict],
+    regime_splits: Optional[Dict] = None,
+    save_prefix: str = "regime",
+) -> pd.DataFrame:
+    """
+    Full regime analysis pipeline: compute per-regime metrics, generate plots,
+    save pickle.
+
+    Parameters
+    ----------
+    results : dict
+        Same format as :func:`run_evaluation`.
+    regime_splits : dict, optional
+        Keys are regime labels; values are ``(start, end)`` ISO date tuples.
+        Defaults to pre/post COVID split at 2020-02-21 / 2020-02-24.
+    save_prefix : str
+        Filename prefix for all saved figures.  Default ``'regime'``.
+
+    Returns
+    -------
+    pd.DataFrame
+        MultiIndex (model, regime) × metrics DataFrame.
+    """
+    _ensure_dirs()
+    sns.set_theme(style="whitegrid")
+
+    logger.info("=" * 60)
+    logger.info("REGIME ANALYSIS — START  (%d models)", len(results))
+    logger.info("=" * 60)
+
+    regime_df = compute_regime_metrics(results, regime_splits)
+
+    for metric, label in [
+        ("tracking_error",    "Tracking Error"),
+        ("information_ratio", "Information Ratio"),
+        ("correlation",       "Correlation"),
+        ("sharpe_replica",    "Sharpe Ratio"),
+    ]:
+        pivot = regime_df[metric].unstack(level="regime").round(4)
+        logger.info("── %s ──\n%s", label, pivot.to_string())
+
+    plot_regime_analysis(regime_df, save_prefix=save_prefix)
+
+    pkl_path = PICKLE_DIR / "regime_analysis.pkl"
+    with open(pkl_path, "wb") as fh:
+        pickle.dump({"regime_df": regime_df, "results": results}, fh)
+    logger.info("Pickle saved → %s", pkl_path)
+
+    logger.info("REGIME ANALYSIS — DONE")
+    logger.info("=" * 60)
+    return regime_df
+
+
 # ── Standalone execution ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":
