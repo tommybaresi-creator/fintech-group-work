@@ -1,0 +1,4 @@
+Model,Precision,Recall,F1,AUC
+EE (Advanced),0.6667,0.2759,0.3902,0.7279
+Student-t (Advanced),0.6923,0.3103,0.4286,0.7768
+GLASSO (Advanced),0.8889,0.2759,0.4211,0.7768
