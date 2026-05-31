@@ -1,0 +1,48 @@
+[project]
+name = "bc4-ews"
+version = "1.0.0"
+description = "Business Case 4 — Early Warning System for Financial Markets"
+requires-python = ">=3.11"
+dependencies = [
+    # ── Core data stack ───────────────────────────────────────────────────────
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "openpyxl>=3.1.0",           # read Dataset4_EWS.xlsx
+    "scipy>=1.11.0",             # genpareto, multivariate_t, stats
+
+    # ── Machine learning ──────────────────────────────────────────────────────
+    "scikit-learn>=1.3.0",       # all sklearn models + preprocessing
+
+    # ── Visualisation ─────────────────────────────────────────────────────────
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+
+    # ── Jupyter ───────────────────────────────────────────────────────────────
+    "jupyter>=1.0.0",
+    "jupyterlab>=4.0.0",
+    "nbconvert>=7.9.0",
+    "ipykernel>=6.26.0",
+
+    # ── Deep learning  (deep_learning/) ──────────────────────────────────────
+    "torch>=2.1.0",              # Autoencoder, VAE, LSTM-AE
+    "hmmlearn>=0.3.3",           # Hidden Markov Model
+
+    # ── Supervised models  (supervised/) ─────────────────────────────────────
+    "xgboost>=2.0.0",
+    "imbalanced-learn>=0.11.0",  # SMOTE
+    "shap>=0.43.0",              # feature importance
+    "optuna>=3.3.0",             # hyperparameter optimisation
+
+    # ── Unsupervised models  (unsupervised/) ─────────────────────────────────
+    "pyod>=1.1.0",               # COPOD, ECOD, HBOS
+]
+
+[dependency-groups]
+dev = [
+    "black>=23.0",
+    "isort>=5.12",
+    "mypy>=1.5",
+]
+
+[tool.setuptools]
+packages = []

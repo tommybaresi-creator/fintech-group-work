@@ -1,9 +1,0 @@
-Model,Precision,Recall,F1,AUC
-MVG Baseline,0.1579,0.931,0.27,0.7836
-MVG Ledoit-Wolf,0.157,0.931,0.2687,0.7894
-Elliptic Envelope,0.75,0.3103,0.439,0.7684
-MVG CDF-based,0.1497,0.8621,0.2551,0.7708
-MVG Asymmetric,0.6087,0.4828,0.5385,0.2866
-Student-t (ν=2),0.2091,0.7931,0.3309,0.7836
-Factor Model (k=1),0.6429,0.3103,0.4186,0.7895
-Graphical Lasso,0.1698,0.931,0.2872,0.7822
