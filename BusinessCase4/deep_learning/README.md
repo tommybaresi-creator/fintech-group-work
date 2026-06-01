@@ -89,12 +89,18 @@ not a modelling limitation.
 
 ### The shuffling damage finding
 
-| Protocol | AUC | Interpretation |
-|---|---|---|
-| LSTM-AE (shuffled) | 0.568 | Near-random -- shuffling destroys sequence models |
-| **LSTM-AE (temporal)** | **0.791** | Correct evaluation -- gap of 0.222 |
-| AE (shuffled) | 0.800 | Small leakage premium |
-| AE (temporal) | 0.766 | Honest baseline |
+| Protocol | AUC | F1 | Interpretation |
+|---|---|---|---|
+| AE (shuffled) | 0.800 | 0.507 | Small leakage premium over temporal |
+| **LSTM-AE (shuffled benchmark)** | **0.799** | 0.426 | Shuffled evaluation — see note below |
+| **LSTM-AE (temporal)** | **0.791** | 0.435 | Temporal (correct) protocol |
+| AE (temporal) | 0.766 | 0.507 | Honest baseline |
+
+> **Note on the shuffled benchmark:** the re-run shows LSTM-AE achieves AUC=0.799
+> under the shuffled protocol — marginally above the temporal 0.791 (+0.008).
+> The theoretical concern (shuffling breaks sequence structure) remains valid,
+> but the AUC gap in this dataset is small. F1 difference is also minor (0.426 vs 0.435).
+> The temporal protocol is still preferred on methodological grounds.
 
 ---
 
